@@ -10,6 +10,7 @@ open AST
 open RISCV
 open Type
 open Typechecker
+open ASTUtil
 
 
 /// Exit code used in the generated assembly to signal an assertion violation.
@@ -447,12 +448,44 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
     | Assertion(arg) ->
         /// Label to jump to when the assertion is true
         let passLabel = Util.genSymbol "assert_true"
+        /// Label for the assertion failure message in the data section
+        let failMsgLabel = Util.genSymbol "assert_fail_msg"
+
+        /// Calculates the names of the free variables in assertion expression, transforming them in a list and ordering them
+        let freeVarNames = 
+            freeVars arg
+            |> Set.toList
+            |> List.sort
+
+        /// Transform the list of free variables into a readable string, or "none"
+        let freeVarsMsg = 
+            match freeVarNames with
+            | [] -> "free vars: none"
+            | vars -> "free vars: " + (String.concat ", " vars)
+
+        /// Compile time assertion failure message including source position
+        let failMsg =
+            $"Assertion failure at "
+            + $"{node.Pos.Begin.Line}:{node.Pos.Begin.Column}"
+            + $"-{node.Pos.End.Line}:{node.Pos.End.Column}\\n"
+            + $"{freeVarsMsg}\\n"
+
         // Check the assertion, and jump to 'passLabel' if it is true
-        // otherwise, fail
+        // otherwise, print a diagnostic message and terminate.
         (doCodegen env arg)
+            .AddData(failMsgLabel, Alloc.String(failMsg))
             .AddText([
                 (RV.ADDI(Reg.r(env.Target), Reg.r(env.Target), Imm12(-1)), "")
                 (RV.BEQZ(Reg.r(env.Target), passLabel), "Jump if assertion OK")
+            ])
+            ++ (beforeSysCall [Reg.a0] [])
+                .AddText([
+                    (RV.LA(Reg.a0, failMsgLabel), "Load address of assertion failure message")
+                    (RV.LI(Reg.a7, 4), "RARS syscall: PrintString")
+                    (RV.ECALL, "")
+                ])
+                ++ (afterSysCall [Reg.a0] [])
+            .AddText([
                 (RV.LI(Reg.a7, 93), "RARS syscall: Exit2")
                 (RV.LI(Reg.a0, assertExitCode), "Assertion violation exit code")
                 (RV.ECALL, "")
