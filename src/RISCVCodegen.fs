@@ -16,6 +16,10 @@ open ASTUtil
 /// Exit code used in the generated assembly to signal an assertion violation.
 let assertExitCode = 42 // Must be non-zero
 
+/// Maximum depth used when recursively printing structure values in assertion diagnostics.
+/// Handles nested structures while preventing infinite output for recursive values.
+let internal assertStructPrintDepth = 6
+
 
 /// Storage information for variables.
 [<RequireQualifiedAccess; StructuralComparison; StructuralEquality>]
@@ -448,43 +452,38 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
     | Assertion(arg) ->
         /// Label to jump to when the assertion is true
         let passLabel = Util.genSymbol "assert_true"
-        /// Label for the assertion failure message in the data section
-        let failMsgLabel = Util.genSymbol "assert_fail_msg"
 
-        /// Calculates the names of the free variables in assertion expression, transforming them in a list and ordering them
-        let freeVarNames = 
+        /// The variables whose runtime values should be reported if this
+        /// assertion fails.  We use the existing AST utility for free variables:
+        /// variables bound inside the assertion expression itself are not part of
+        /// the surrounding runtime context and should therefore not be printed.
+        let freeVarNames =
             freeVars arg
             |> Set.toList
             |> List.sort
 
-        /// Transform the list of free variables into a readable string, or "none"
-        let freeVarsMsg = 
-            match freeVarNames with
-            | [] -> "free vars: none"
-            | vars -> "free vars: " + (String.concat ", " vars)
-
-        /// Compile time assertion failure message including source position
-        let failMsg =
+        /// Compile-time part of the assertion diagnostic.  The runtime values of
+        /// the variables listed below are appended by generated code only on the
+        /// failing path.
+        let failHeader =
             $"Assertion failure at "
-            + $"{node.Pos.Begin.Line}:{node.Pos.Begin.Column}"
-            + $"-{node.Pos.End.Line}:{node.Pos.End.Column}\\n"
-            + $"{freeVarsMsg}\\n"
+            + $"%d{node.Pos.Begin.Line}:%d{node.Pos.Begin.Column}"
+            + $"-%d{node.Pos.End.Line}:%d{node.Pos.End.Column}\n"
+            + $"expression: %s{formatAssertionExpr arg}\n"
 
-        // Check the assertion, and jump to 'passLabel' if it is true
-        // otherwise, print a diagnostic message and terminate.
+        /// Generated code that prints the runtime values of all free variables
+        /// appearing in the failed assertion expression.
+        let valueDiagnostics = codegenAssertionValues env arg freeVarNames
+
+        // Check the assertion, and jump to 'passLabel' if it is true.
+        // Otherwise, print a detailed diagnostic and terminate.
         (doCodegen env arg)
-            .AddData(failMsgLabel, Alloc.String(failMsg))
             .AddText([
                 (RV.ADDI(Reg.r(env.Target), Reg.r(env.Target), Imm12(-1)), "")
                 (RV.BEQZ(Reg.r(env.Target), passLabel), "Jump if assertion OK")
             ])
-            ++ (beforeSysCall [Reg.a0] [])
-                .AddText([
-                    (RV.LA(Reg.a0, failMsgLabel), "Load address of assertion failure message")
-                    (RV.LI(Reg.a7, 4), "RARS syscall: PrintString")
-                    (RV.ECALL, "")
-                ])
-                ++ (afterSysCall [Reg.a0] [])
+            ++ (printStringLiteral failHeader)
+            ++ valueDiagnostics
             .AddText([
                 (RV.LI(Reg.a7, 93), "RARS syscall: Exit2")
                 (RV.LI(Reg.a0, assertExitCode), "Assertion violation exit code")
@@ -908,6 +907,260 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
 
     | Pointer(_) ->
         failwith "BUG: pointers cannot be compiled (by design!)"
+
+/// Escape a string so it can be shown inside the compile-time rendering of a
+/// failed assertion expression.
+and internal escapeAssertionString (s: string): string =
+    s.Replace("\\", "\\\\")
+     .Replace("\n", "\\n")
+     .Replace("\r", "\\r")
+     .Replace("\t", "\\t")
+     .Replace("\"", "\\\"")
+
+/// Return a compact, source-like rendering of an expression for assertion
+/// diagnostics.  The original source text is not stored in the AST, so this is
+/// intentionally a readable reconstruction from the typed AST.
+and internal formatAssertionExpr (node: TypedAST): string =
+    let par (n: TypedAST) = $"(%s{formatAssertionExpr n})"
+    match node.Expr with
+    | UnitVal -> "()"
+    | BoolVal(v) -> if v then "true" else "false"
+    | IntVal(v) -> string v
+    | FloatVal(v) -> string v
+    | StringVal(v) -> $"\"%s{escapeAssertionString v}\""
+    | Var(name) -> name
+    | BinNumOp(op, lhs, rhs) ->
+        let opStr =
+            match op with
+            | NumericalOp.Add -> "+"
+            | NumericalOp.Sub -> "-"
+            | NumericalOp.Mult -> "*"
+            | NumericalOp.Div -> "/"
+            | NumericalOp.Mod -> "%"
+        $"%s{par lhs} %s{opStr} %s{par rhs}"
+    | BinLogicOp(op, lhs, rhs) ->
+        let opStr =
+            match op with
+            | LogicOp.And -> "&"
+            | LogicOp.Or -> "|"
+            | LogicOp.Xor -> "^"
+            | LogicOp.AndS -> "&&"
+            | LogicOp.OrS -> "||"
+        $"%s{par lhs} %s{opStr} %s{par rhs}"
+    | Not(arg) -> $"not %s{par arg}"
+    | BinRelOp(op, lhs, rhs) ->
+        let opStr =
+            match op with
+            | RelationalOp.Eq -> "="
+            | RelationalOp.Less -> "<"
+            | RelationalOp.LessEq -> "<="
+            | RelationalOp.Greater -> ">"
+        $"%s{par lhs} %s{opStr} %s{par rhs}"
+    | ReadInt -> "readInt()"
+    | ReadFloat -> "readFloat()"
+    | Print(arg) -> $"print(%s{formatAssertionExpr arg})"
+    | PrintLn(arg) -> $"println(%s{formatAssertionExpr arg})"
+    | If(cond, ifTrue, ifFalse) ->
+        $"if %s{formatAssertionExpr cond} then %s{formatAssertionExpr ifTrue} else %s{formatAssertionExpr ifFalse}"
+    | Seq(nodes) ->
+        nodes |> List.map formatAssertionExpr |> String.concat "; " |> sprintf "{%s}"
+    | Type(name, _, scope) -> $"type %s{name}; %s{formatAssertionExpr scope}"
+    | Ascription(_, expr) -> formatAssertionExpr expr
+    | Assertion(arg) -> $"assert(%s{formatAssertionExpr arg})"
+    | Let(name, init, scope)
+    | LetT(name, _, init, scope)
+    | LetMut(name, init, scope) ->
+        $"let %s{name} = %s{formatAssertionExpr init}; %s{formatAssertionExpr scope}"
+    | Assign(lhs, rhs) -> $"%s{formatAssertionExpr lhs} <- %s{formatAssertionExpr rhs}"
+    | While(cond, body) -> $"while %s{formatAssertionExpr cond} do %s{formatAssertionExpr body}"
+    | DoWhile(body, cond) -> $"do %s{formatAssertionExpr body} while %s{formatAssertionExpr cond}"
+    | For(name, init, cond, step, body) ->
+        $"for %s{name} = %s{formatAssertionExpr init}; %s{formatAssertionExpr cond}; %s{formatAssertionExpr step} do %s{formatAssertionExpr body}"
+    | Lambda(args, body) ->
+        let argNames = args |> List.map fst |> String.concat ", "
+        $"fun (%s{argNames}) -> %s{formatAssertionExpr body}"
+    | Application(expr, args) ->
+        let argsStr = args |> List.map formatAssertionExpr |> String.concat ", "
+        $"%s{formatAssertionExpr expr}(%s{argsStr})"
+    | StructCons(fields) ->
+        fields
+        |> List.map (fun (field, expr) -> $"%s{field} = %s{formatAssertionExpr expr}")
+        |> String.concat "; "
+        |> sprintf "struct {%s}"
+    | FieldSelect(target, field) -> $"%s{formatAssertionExpr target}.%s{field}"
+    | Pointer(addr) -> $"<pointer 0x%x{addr}>"
+    | UnionCons(label, expr) -> $"%s{label}(%s{formatAssertionExpr expr})"
+    | Match(expr, _) -> $"match %s{formatAssertionExpr expr} with ..."
+
+/// Generate code that prints a fixed string through the RARS PrintString
+/// syscall.  The string is allocated in the data segment.
+and internal printStringLiteral (s: string): Asm =
+    let label = Util.genSymbol "assert_diag_str"
+    Asm().AddData(label, Alloc.String(escapeAssertionString s))
+    ++ (beforeSysCall [Reg.a0] [])
+        .AddText([
+            (RV.LA(Reg.a0, label), "Load assertion diagnostic string")
+            (RV.LI(Reg.a7, 4), "RARS syscall: PrintString")
+            (RV.ECALL, "")
+        ])
+        ++ (afterSysCall [Reg.a0] [])
+
+/// Generate code that prints a boolean value held in the given register.
+and internal printBoolReg (reg: Reg): Asm =
+    let trueLabel = Util.genSymbol "assert_bool_true"
+    let endLabel = Util.genSymbol "assert_bool_end"
+    let trueStr = Util.genSymbol "assert_true_str"
+    let falseStr = Util.genSymbol "assert_false_str"
+    Asm().AddData(trueStr, Alloc.String("true"))
+         .AddData(falseStr, Alloc.String("false"))
+    ++ (beforeSysCall [Reg.a0] [])
+        .AddText([
+            (RV.BNEZ(reg, trueLabel), "Assertion diagnostic: boolean is true")
+            (RV.LA(Reg.a0, falseStr), "String to print via syscall")
+            (RV.J(endLabel), "")
+            (RV.LABEL(trueLabel), "")
+            (RV.LA(Reg.a0, trueStr), "String to print via syscall")
+            (RV.LABEL(endLabel), "")
+            (RV.LI(Reg.a7, 4), "RARS syscall: PrintString")
+            (RV.ECALL, "")
+        ])
+        ++ (afterSysCall [Reg.a0] [])
+
+/// Generate code that prints an integer-like value held in a register according
+/// to the given Hygge type.  For structure types, the register is interpreted as
+/// a heap pointer to the structure.
+and internal printValueReg (env: TypingEnv) (reg: Reg) (tpe: Type) (depth: int): Asm =
+    match expandType env tpe with
+    | t when (isSubtypeOf env t TUnit) -> printStringLiteral "()"
+    | t when (isSubtypeOf env t TBool) -> printBoolReg reg
+    | t when (isSubtypeOf env t TInt) ->
+        (beforeSysCall [Reg.a0] [])
+            .AddText([
+                (RV.MV(Reg.a0, reg), "Copy assertion diagnostic int to a0")
+                (RV.LI(Reg.a7, 1), "RARS syscall: PrintInt")
+                (RV.ECALL, "")
+            ])
+            ++ (afterSysCall [Reg.a0] [])
+    | t when (isSubtypeOf env t TString) ->
+        printStringLiteral "\""
+        ++ (beforeSysCall [Reg.a0] [])
+            .AddText([
+                (RV.MV(Reg.a0, reg), "Copy assertion diagnostic string pointer to a0")
+                (RV.LI(Reg.a7, 4), "RARS syscall: PrintString")
+                (RV.ECALL, "")
+            ])
+            ++ (afterSysCall [Reg.a0] [])
+        ++ (printStringLiteral "\"")
+    | TFun(_, _) -> printStringLiteral "<function>"
+    | TStruct(fields) -> printStructReg env reg fields depth
+    | TUnion(_) -> printStringLiteral "<union>"
+    | TVar(name) -> printStringLiteral $"<value of unresolved type %s{name}>"
+    | TFloat -> failwith "BUG: float values must be printed through printFloatReg"
+
+/// Generate code that prints a floating-point value held in the given register.
+and internal printFloatReg (fpreg: FPReg): Asm =
+    (beforeSysCall [] [FPReg.fa0])
+        .AddText([
+            (RV.FMV_S(FPReg.fa0, fpreg), "Copy assertion diagnostic float to fa0")
+            (RV.LI(Reg.a7, 2), "RARS syscall: PrintFloat")
+            (RV.ECALL, "")
+        ])
+        ++ (afterSysCall [] [FPReg.fa0])
+
+/// Generate code that prints a structure value.  The given register must hold
+/// the heap address of the first field of the structure.
+and internal printStructReg (env: TypingEnv) (baseReg: Reg) (fields: List<string * Type>) (depth: int): Asm =
+    if depth <= 0 then
+        printStringLiteral "{...}"
+    else
+        let valueReg = if baseReg = Reg.t(6u) then Reg.t(5u) else Reg.t(6u)
+        let printField (acc: Asm) (i: int, (fieldName: string, fieldType: Type)) =
+            let separator = if i = 0 then "" else "; "
+            let prefix = $"%s{separator}%s{fieldName} = "
+            let fieldAsm =
+                match expandType env fieldType with
+                | t when (isSubtypeOf env t TUnit) ->
+                    printStringLiteral "()"
+                | t when (isSubtypeOf env t TFloat) ->
+                    (beforeSysCall [Reg.a0] [FPReg.fa0])
+                        .AddText([
+                            (RV.FLW_S(FPReg.fa0, Imm12(i * 4), baseReg),
+                             $"Load float field '%s{fieldName}' for assertion diagnostic")
+                            (RV.LI(Reg.a7, 2), "RARS syscall: PrintFloat")
+                            (RV.ECALL, "")
+                        ])
+                        ++ (afterSysCall [Reg.a0] [FPReg.fa0])
+                | t ->
+                    Asm(RV.LW(valueReg, Imm12(i * 4), baseReg),
+                        $"Load field '%s{fieldName}' for assertion diagnostic")
+                    ++ (saveRegisters [baseReg] [])
+                    ++ (printValueReg env valueReg t (depth - 1))
+                    ++ (restoreRegisters [baseReg] [])
+            acc ++ (printStringLiteral prefix) ++ fieldAsm
+
+        printStringLiteral "{"
+        ++ (List.fold printField (Asm()) (List.indexed fields))
+        ++ (printStringLiteral "}")
+
+/// Generate code that prints the current runtime value of a variable involved
+/// in a failed assertion.
+and internal codegenAssertionValue (env: CodegenEnv) (typeEnv: TypingEnv) (name: string): Asm =
+    match typeEnv.Vars.TryFind name with
+    | None -> printStringLiteral $"%s{name} = <not in typing environment>\n"
+    | Some(tpe) ->
+        let header = printStringLiteral $"%s{name} = "
+        let valueCode =
+            match expandType typeEnv tpe with
+            | t when (isSubtypeOf typeEnv t TUnit) -> printStringLiteral "()"
+            | t when (isSubtypeOf typeEnv t TFloat) ->
+                match env.VarStorage.TryFind name with
+                | Some(Storage.FPReg(fpreg)) -> printFloatReg fpreg
+                | Some(Storage.Label(lab)) ->
+                    (beforeSysCall [Reg.a0] [FPReg.fa0])
+                        .AddText([
+                            (RV.LA(Reg.a0, lab), $"Load address of variable '%s{name}'")
+                            (RV.FLW_S(FPReg.fa0, Imm12(0), Reg.a0),
+                             $"Load float value of variable '%s{name}'")
+                            (RV.LI(Reg.a7, 2), "RARS syscall: PrintFloat")
+                            (RV.ECALL, "")
+                        ])
+                        ++ (afterSysCall [Reg.a0] [FPReg.fa0])
+                | Some(Storage.Reg(_)) as st ->
+                    failwith $"BUG: float variable %s{name} has unexpected storage %O{st}"
+                | None -> printStringLiteral "<not stored>"
+            | t ->
+                match env.VarStorage.TryFind name with
+                | Some(Storage.Reg(reg)) -> printValueReg typeEnv reg t assertStructPrintDepth
+                | Some(Storage.Label(lab)) ->
+                    match t with
+                    | TFun(_, _) -> printStringLiteral "<function>"
+                    | _ ->
+                        let scratch = Reg.t(5u)
+                        Asm([
+                            (RV.LA(scratch, lab), $"Load address of variable '%s{name}'")
+                            (RV.LW(scratch, Imm12(0), scratch),
+                             $"Load value of variable '%s{name}'")
+                        ])
+                        ++ (printValueReg typeEnv scratch t assertStructPrintDepth)
+                | Some(Storage.FPReg(_)) as st ->
+                    failwith $"BUG: non-float variable %s{name} has unexpected storage %O{st}"
+                | None -> printStringLiteral "<not stored>"
+        header
+        ++ (saveRegisters [Reg.t(5u); Reg.t(6u)] [])
+        ++ valueCode
+        ++ (restoreRegisters [Reg.t(5u); Reg.t(6u)] [])
+        ++ (printStringLiteral "\n")
+
+/// Generate code that prints all assertion-value diagnostics.
+and internal codegenAssertionValues (env: CodegenEnv) (assertExpr: TypedAST) (names: List<string>): Asm =
+    match names with
+    | [] -> printStringLiteral "values: none\n"
+    | _ ->
+        printStringLiteral "values:\n"
+        ++ (List.fold (fun acc name ->
+                acc ++ (printStringLiteral "  ")
+                    ++ (codegenAssertionValue env assertExpr.Env name))
+                (Asm()) names)
 
 /// Generate code to save the given registers on the stack, before a RARS system
 /// call. Register a7 (which holds the system call number) is backed-up by
