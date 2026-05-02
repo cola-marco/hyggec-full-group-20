@@ -535,6 +535,17 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
             Ok { Pos = node.Pos; Env = env; Type = TUnit;
                  Expr = For(name, tInit, tCond, tStep, tBody) }
    
+    | IncDec(op, name) ->
+        if (env.Mutables.Contains name) then
+            if isSubtypeOf env (env.Vars.[name]) TInt 
+                then Ok { Pos = node.Pos; Env = env; Type = TInt; Expr = IncDec(op, name)}
+            elif isSubtypeOf env (env.Vars.[name]) TFloat 
+                then Ok { Pos = node.Pos; Env = env; Type = TFloat; Expr = IncDec(op, name)}
+            else Error([(node.Pos, $"IncDec {op}: expected type %O{TInt} or %O{TFloat}, "
+                            + $"found %O{env.Vars.[name]}")])
+        else Error([(node.Pos, $"IncDec {op} to non-mutable variable %s{name}")])
+
+
     | Lambda(args, body) ->
         let (argNames, argPretypes) = List.unzip args
         /// Duplicate names in 'lambda' arguments

@@ -163,6 +163,8 @@ let rec internal formatASTRec (node: AST.Node<'E,'T>): Tree =
                             ("cond", formatASTRec cond)
                             ("step", formatASTRec step)
                             ("body", formatASTRec body)]
+    | IncDec(op, name) ->
+        mkTree $"IncDec {op} %s{name}" node []
     | Lambda(args, body) ->
         /// Formatted arguments with their pretype
         let argChildren =

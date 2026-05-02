@@ -88,6 +88,18 @@ type RelationalOp =
     /// Greater-than operation.
     | Greater
 
+/// Operation type used to distinguish pre/post increment and decrement expressions.
+[<RequireQualifiedAccess>]
+type IncDecOp =
+    /// Pre Increment operation.
+    | PreInc
+    /// Pre Decrement operation.
+    | PreDec
+    /// Post Increment operation.
+    | PostInc
+    /// Post Decrement operation.
+    | PostDec
+
 /// Node of the Abstract Syntax Tree of a Hygge expression.  The meaning of the
 /// two type arguments is the following: 'E specifies what typing environment
 /// information is associated to each expression in the AST; 'T specifies what
@@ -216,6 +228,10 @@ and Expr<'E,'T> =
     /// repeat the 'body'. Returns the value of the last execution of 'body'.
     | DoWhile of body: Node<'E,'T>
              * cond: Node<'E,'T>
+
+    /// Pre and Post Incrementation and Decrementation on a mutable variable
+    | IncDec of op: IncDecOp
+                * name: string
 
     // 'For' loop with a Scoped Variable: as long as 'cond' is true, repeat the 'body'.
     | For of name: string       // let mutable x

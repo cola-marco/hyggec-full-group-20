@@ -502,6 +502,28 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
         let rewritten = LetMut(name, init, ifNode)
         Some(env, {node with Expr = rewritten})
         
+    | IncDec(op, name) ->
+        match (env.Mutables.TryFind name) with
+        | Some(v) ->
+            match v.Expr with
+            | IntVal(v1) ->
+                let v = 
+                    match op with
+                    | IncDecOp.PreInc | IncDecOp.PostInc -> 1
+                    | IncDecOp.PreDec | IncDecOp.PostDec -> -1
+                let newNode = {node with Expr = IntVal(v1 + v)}
+                let env' = {env with Mutables = env.Mutables.Add(name, newNode)}
+                Some(env', {node with Expr = newNode.Expr})
+            | FloatVal(v2) ->
+                let v = 
+                    match op with
+                    | IncDecOp.PreInc | IncDecOp.PostInc -> 1.0f
+                    | IncDecOp.PreDec | IncDecOp.PostDec -> -1.0f
+                let newNode = {node with Expr = FloatVal(v2 + v)}
+                let env' = {env with Mutables = env.Mutables.Add(name, newNode)}
+                Some(env', {node with Expr = newNode.Expr})
+            | _ -> None
+        | None -> None
 
     | Application(expr, args) ->
         match expr.Expr with
