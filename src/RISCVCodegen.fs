@@ -906,6 +906,83 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
         // Put everything together: compile the target, access the field
         selTargetCode ++ fieldAccessCode
 
+    | UnionCons(label, expr) ->
+        // Compile the payload expression first
+        let exprCode =
+            doCodegen { env with Target = env.Target + 1u } expr
+
+        // Extract the tag from the type of this UnionCons node
+        let tag =
+            match node.Type with
+            | TUnion([{ Label = l; Tag = t; CaseType = _ }]) when l = label -> t
+            | _ ->
+                failwith $"BUG: expected single-case union type for UnionCons %s{label}"
+
+        // Allocate 2 words on the heap:
+        //   word 0 = integer tag
+        //   word 1 = payload value
+        let unionAllocCode =
+            (beforeSysCall [Reg.a0] [])
+                .AddText([
+                    (RV.LI(Reg.a0, 8),
+                    "Allocate 2 words (tag + payload) for union value")
+                    (RV.LI(Reg.a7, 9),
+                    "RARS syscall: Sbrk")
+                    (RV.ECALL, "")
+                    (RV.MV(Reg.r(env.Target), Reg.a0),
+                    "Move allocated union address to target")
+                ])
+                ++ (afterSysCall [Reg.a0] [])
+
+        // Store the integer tag in word 0
+        let storeTagCode =
+            Asm(
+                RV.LI(Reg.r(env.Target + 2u), tag),
+                $"Load union tag for label '%s{label}'"
+            )
+            ++
+            Asm(
+                RV.SW(
+                    Reg.r(env.Target + 2u),
+                    Imm12(0),
+                    Reg.r(env.Target)
+                ),
+                "Store union tag at offset 0"
+            )
+
+        // Store the payload in word 1 (offset 4)
+        let storePayloadCode =
+            match expr.Type with
+            | t when (isSubtypeOf expr.Env t TUnit) ->
+                Asm() // no payload to store
+
+            | t when (isSubtypeOf expr.Env t TFloat) ->
+                Asm(
+                    RV.FSW_S(
+                        FPReg.r(env.FPTarget),
+                        Imm12(4),
+                        Reg.r(env.Target)
+                    ),
+                    "Store union payload (float) at offset 4"
+                )
+
+            | _ ->
+                Asm(
+                    RV.SW(
+                        Reg.r(env.Target + 1u),
+                        Imm12(4),
+                        Reg.r(env.Target)
+                    ),
+                    "Store union payload at offset 4"
+                )
+
+        // Final result:
+        // target register contains pointer to union object
+        unionAllocCode
+        ++ exprCode
+        ++ storeTagCode
+        ++ storePayloadCode
+
     | Pointer(_) ->
         failwith "BUG: pointers cannot be compiled (by design!)"
 
