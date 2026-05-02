@@ -185,6 +185,10 @@ let rec internal formatASTRec (node: AST.Node<'E,'T>): Tree =
         mkTree $"FieldSelect %s{field}" node [("expr", formatASTRec target)]
     | Pointer(addr) ->
         mkTree $"Pointer 0x%x{addr}" node []
+    | Copy(arg) ->
+        mkTree "Copy" node [("arg", formatASTRec arg)]
+    | DeepCopy(arg) ->
+        mkTree "DeepCopy" node [("arg", formatASTRec arg)]
     | UnionCons(label, expr) ->
         mkTree $"UnionCons %s{label}" node [("expr", formatASTRec expr)]
     | Match(expr, cases) ->

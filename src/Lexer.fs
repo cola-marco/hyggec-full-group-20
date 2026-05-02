@@ -94,6 +94,10 @@ type Token =
     | FUN
     /// Keyword 'struct'.
     | STRUCT
+    /// Keyword 'copy'.
+    | COPY
+    /// Keyword 'deepcopy'.
+    | DEEPCOPY
     /// Keyword 'union'.
     | UNION
     /// Keyword 'match'.
@@ -227,6 +231,9 @@ and internal mkKeywordOrIdent (s: string) =
     | "for" -> FOR
     | "fun" -> FUN
     | "struct" -> STRUCT
+    | "copy" -> COPY
+    | "deepcopy" -> DEEPCOPY
+    | "dot" -> DOT
     | "union" -> UNION
     | "match" -> MATCH
     | "with" -> WITH

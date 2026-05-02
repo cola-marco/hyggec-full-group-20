@@ -639,6 +639,34 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
     | Pointer(_) ->
         Error([(node.Pos, "pointers cannot be type-checked (by design!)")])
 
+    | Copy(arg) -> 
+        match (typer env arg) with
+        | Ok(targ) ->
+            match (expandType env targ.Type) with
+            | TStruct(_) -> 
+                Ok { Pos = node.Pos; 
+                     Env = env; 
+                     Type = targ.Type; 
+                     Expr = Copy(targ) }
+            | _ -> 
+                Error([(node.Pos, $"copy: expected argument of struct type, found %O{targ.Type}")])
+        | Error(es) -> 
+            Error(es)
+
+    | DeepCopy(arg) ->
+        match (typer env arg) with
+        | Ok(targ) ->
+            match (expandType env targ.Type) with
+            | TStruct(_) ->
+                Ok { Pos = node.Pos;
+                     Env = env;
+                     Type = targ.Type;
+                     Expr = DeepCopy(targ) }
+            | _ ->
+                Error([(node.Pos, $"deepcopy: expected argument of struct type, found %O{targ.Type}")])
+        | Error(es) ->
+            Error(es)
+            
     | UnionCons(label, expr) ->
         match (typer env expr) with
         | Ok(texpr) ->

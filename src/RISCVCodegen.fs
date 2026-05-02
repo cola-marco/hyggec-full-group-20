@@ -909,6 +909,88 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
     | Pointer(_) ->
         failwith "BUG: pointers cannot be compiled (by design!)"
 
+    | Copy(target) -> 
+        let targetCode = doCodegen env target
+        match (expandType node.Env target.Type) with
+        | TStruct(fields) ->
+
+            let structAllocCode =
+                Asm(RV.MV(Reg.r(env.Target + 1u), Reg.r(env.Target)),
+                    "Save source struct address for copy")
+                ++ (beforeSysCall [Reg.r(env.Target + 1u)] [])
+                    .AddText([
+                        (RV.LI(Reg.a0, fields.Length * 4),
+                         "Amount of memory to allocate for a copied struct (in bytes)")
+                        (RV.LI(Reg.a7, 9), "RARS syscall: Sbrk")
+                        (RV.ECALL, "")
+                        (RV.MV(Reg.r(env.Target), Reg.a0),
+                         "Move syscall result (copied struct mem address) to target")
+                    ])
+                    ++ (afterSysCall [Reg.r(env.Target + 1u)] [])
+
+            // lw env.Target + 2u, offset(env.Target + 1u)  
+            // sw env.Target + 2u, offset(env.Target)
+            let copyField (acc: Asm) (fieldOffset: int, _) =
+                acc.AddText([
+                    (RV.LW(Reg.r(env.Target + 2u), Imm12(fieldOffset * 4),
+                           Reg.r(env.Target + 1u)),
+                     $"Load copied struct field at offset %d{fieldOffset}")
+                    (RV.SW(Reg.r(env.Target + 2u), Imm12(fieldOffset * 4),
+                           Reg.r(env.Target)),
+                     $"Store copied struct field at offset %d{fieldOffset}")
+                ])
+            let fieldsCopyCode =
+                List.fold copyField (Asm()) (List.indexed fields)
+
+            targetCode ++ structAllocCode ++ fieldsCopyCode
+        | (t: Type) ->
+            failwith $"BUG: copy codegen on invalid target type: %O{t}"
+
+    | DeepCopy(target) ->
+        match (expandType node.Env target.Type) with
+        | TStruct(fields) ->
+            doCodegen env target
+            let tmpName = Util.genSymbol "__deepcopy_target"
+            let tmpVar = { target with Expr = Var(tmpName) }
+
+            let mkFieldNode (fieldName, fieldType) =
+                let fieldSelect: TypedAST =
+                    { Pos = node.Pos
+                      Env = node.Env
+                      Type = fieldType
+                      Expr = FieldSelect(tmpVar, fieldName) }
+                
+                let fieldInit =
+                    match (expandType node.Env fieldType) with
+                    | TStruct(_) -> 
+                        let structExpr = DeepCopy(fieldSelect)
+                        ({ Pos = node.Pos
+                           Env = node.Env
+                           Type = fieldType
+                           Expr = structExpr
+                        }: TypedAST)
+                    | _ -> fieldSelect
+                
+                (fieldName, fieldInit)
+
+            let newFields = List.map mkFieldNode fields
+            let copiedStruct: TypedAST =
+                { Pos = node.Pos
+                  Env = node.Env
+                  Type = target.Type
+                  Expr = StructCons(newFields)
+                }
+
+            let lowered: TypedAST =
+                { Pos = node.Pos
+                  Env = node.Env
+                  Type = target.Type
+                  Expr = Let(tmpName, target, copiedStruct) }
+
+            doCodegen env lowered
+        | (t: Type) ->
+            failwith $"BUG: deepcopy codegen on invalid target type: %O{t}"
+
 /// Generate code to save the given registers on the stack, before a RARS system
 /// call. Register a7 (which holds the system call number) is backed-up by
 /// default, so it does not need to be specified when calling this function.
