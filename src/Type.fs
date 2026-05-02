@@ -7,11 +7,17 @@
 module Type
 
 
+type UnionCaseInfo = {
+    Label : string
+    Tag : int
+    CaseType : Type
+}
+
 /// Representation of a type.  This is essentially the abstract syntax tree of a
 /// type as it appears in a Hygge program (not to be confused with the
 /// 'TypedAST' of a whole Hygge program).  The type argument I determines how
 /// type identifiers are represented inside the type tree.
-type Type =
+and Type =
     /// Boolean type.
     | TBool
     /// Integer type.
@@ -29,7 +35,7 @@ type Type =
     /// A struct type with ordered fields, each having a unique name and a type.
     | TStruct of fields: List<string * Type>
     /// Discriminated union type.  Each case consists of a label and a type.
-    | TUnion of cases: List<string * Type>
+    | TUnion of cases: List<UnionCaseInfo>
 
     /// Returns a human-readable string describing the type.
     override this.ToString(): string =
@@ -49,7 +55,7 @@ type Type =
             let entriesStr = Seq.map fmtEntry fields
             "struct {" + System.String.Join("; ", entriesStr) + "}"
         | TUnion(cases) ->
-            let fmtCase (f: string, t: Type) = $"%s{f}: %O{t}"
+            let fmtCase (case: UnionCaseInfo) = $"(%s{case.Label}: %O{case.CaseType}"
             let casesStr = Seq.map fmtCase cases
             "union {" + System.String.Join("; ", casesStr) + "}"
 
@@ -74,7 +80,7 @@ let rec freeTypeVars (t: Type): Set<string> =
         let (_, fieldTypes) = List.unzip fields
         collectFreeTypeVars fieldTypes
     | TUnion(cases) ->
-        let (_, caseTypes) = List.unzip cases
+        let caseTypes = List.map (fun c -> c.CaseType) cases
         collectFreeTypeVars caseTypes
 
 /// Collect all free type variables in the given list of types.
