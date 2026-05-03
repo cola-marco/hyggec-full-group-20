@@ -655,6 +655,51 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
         | None -> None
     | FieldSelect(_, _) -> None
 
+    | Copy({Expr = Pointer(addr)}) -> 
+        match (env.PtrInfo.TryFind addr) with
+        | Some(fields) ->
+            let fieldNodes = 
+                fields |> List.mapi (fun i _ -> env.Heap.[addr + uint i])
+            let (heap': Heap<'E,'T>,baseAddr) = heapAlloc env.Heap fieldNodes
+            let ptrInfo' = env.PtrInfo.Add(baseAddr, fields)
+            Some({env with Heap = heap'; PtrInfo = ptrInfo'}, {node with Expr = Pointer(baseAddr)})
+
+    // Shallow Copy
+    | Copy({Expr = StructCons(fields)}) ->
+        Some(env, {node with Expr = StructCons(fields)})
+
+    // Deep Copy
+    | DeepCopy({Expr = Pointer(addr)}) ->
+        let rec copyStruct(heap : Heap<'E,'T>, pInfo: Map<uint, string list>, currAddr :uint) : Heap<'E,'T> * Map<uint, string list> * uint = 
+            match (pInfo.TryFind currAddr) with
+            | Some fields -> 
+                let (heap',pInfo', nodeList) = 
+                    List.fold (fun (h: Heap<'E,'T>,  p: Map<uint, string list>, nodeList : Node<'E,'T> list) (i : int) -> 
+                        let fieldVal = h.[currAddr + uint i]
+                        match fieldVal.Expr with
+                        // nextAddr is the next position in heap  
+                        | Pointer(nextAddr) ->
+                            let (h',p',assignedAddr) = copyStruct(h,p,nextAddr)
+                            let ptr = {fieldVal with Expr = Pointer(assignedAddr)}
+                            (h',p',ptr :: nodeList)
+                        | _ ->
+                            (h,p, fieldVal :: nodeList)
+                    ) (heap, pInfo, []) [0 .. fields.Length - 1]
+                
+                let nodeListRev = List.rev nodeList
+                let (heap'', baseAddr) = heapAlloc heap' nodeListRev
+                let pInfo'' = pInfo'.Add(baseAddr, fields)
+                (heap'', pInfo'', baseAddr)     
+            | None ->
+                (heap, pInfo, currAddr)
+
+        match env.PtrInfo.TryFind addr with
+        | Some _ ->
+            let (heap', pInfo', baseAddr) = copyStruct(env.Heap, env.PtrInfo,addr)
+            Some({env with Heap = heap'; PtrInfo = pInfo'}, {node with Expr = Pointer(baseAddr)})
+        | None -> None
+
+        
     | UnionCons(label, expr) ->
         match (reduce env expr) with
         | Some(env', expr') -> Some(env', {node with Expr = UnionCons(label, expr')})

@@ -122,6 +122,12 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
         let substInitNodes = List.map (fun e -> (subst e var sub)) initNodes
         {node with Expr = StructCons(List.zip fieldNames substInitNodes)}
 
+    | Copy(source) ->
+        { node with Expr = Copy(subst source var sub) }
+        
+    | DeepCopy(source) ->
+        { node with Expr = DeepCopy(subst source var sub) }
+
     | FieldSelect(target, field) ->
         {node with Expr = FieldSelect((subst target var sub), field)}
 

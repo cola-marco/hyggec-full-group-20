@@ -10,6 +10,7 @@ open AST
 open RISCV
 open Type
 open Typechecker
+open ASTUtil
 
 
 /// Exit code used in the generated assembly to signal an assertion violation.
@@ -447,12 +448,44 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
     | Assertion(arg) ->
         /// Label to jump to when the assertion is true
         let passLabel = Util.genSymbol "assert_true"
+        /// Label for the assertion failure message in the data section
+        let failMsgLabel = Util.genSymbol "assert_fail_msg"
+
+        /// Calculates the names of the free variables in assertion expression, transforming them in a list and ordering them
+        let freeVarNames = 
+            freeVars arg
+            |> Set.toList
+            |> List.sort
+
+        /// Transform the list of free variables into a readable string, or "none"
+        let freeVarsMsg = 
+            match freeVarNames with
+            | [] -> "free vars: none"
+            | vars -> "free vars: " + (String.concat ", " vars)
+
+        /// Compile time assertion failure message including source position
+        let failMsg =
+            $"Assertion failure at "
+            + $"{node.Pos.Begin.Line}:{node.Pos.Begin.Column}"
+            + $"-{node.Pos.End.Line}:{node.Pos.End.Column}\\n"
+            + $"{freeVarsMsg}\\n"
+
         // Check the assertion, and jump to 'passLabel' if it is true
-        // otherwise, fail
+        // otherwise, print a diagnostic message and terminate.
         (doCodegen env arg)
+            .AddData(failMsgLabel, Alloc.String(failMsg))
             .AddText([
                 (RV.ADDI(Reg.r(env.Target), Reg.r(env.Target), Imm12(-1)), "")
                 (RV.BEQZ(Reg.r(env.Target), passLabel), "Jump if assertion OK")
+            ])
+            ++ (beforeSysCall [Reg.a0] [])
+                .AddText([
+                    (RV.LA(Reg.a0, failMsgLabel), "Load address of assertion failure message")
+                    (RV.LI(Reg.a7, 4), "RARS syscall: PrintString")
+                    (RV.ECALL, "")
+                ])
+                ++ (afterSysCall [Reg.a0] [])
+            .AddText([
                 (RV.LI(Reg.a7, 93), "RARS syscall: Exit2")
                 (RV.LI(Reg.a0, assertExitCode), "Assertion violation exit code")
                 (RV.ECALL, "")
@@ -1003,6 +1036,88 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
                 "Load array length from offset 0")
         
         arrayCode ++ lengthCode
+
+    | Copy(target) -> 
+        let targetCode = doCodegen env target
+        match (expandType node.Env target.Type) with
+        | TStruct(fields) ->
+
+            let structAllocCode =
+                Asm(RV.MV(Reg.r(env.Target + 1u), Reg.r(env.Target)),
+                    "Save source struct address for copy")
+                ++ (beforeSysCall [Reg.r(env.Target + 1u)] [])
+                    .AddText([
+                        (RV.LI(Reg.a0, fields.Length * 4),
+                         "Amount of memory to allocate for a copied struct (in bytes)")
+                        (RV.LI(Reg.a7, 9), "RARS syscall: Sbrk")
+                        (RV.ECALL, "")
+                        (RV.MV(Reg.r(env.Target), Reg.a0),
+                         "Move syscall result (copied struct mem address) to target")
+                    ])
+                    ++ (afterSysCall [Reg.r(env.Target + 1u)] [])
+
+            // lw env.Target + 2u, offset(env.Target + 1u)  
+            // sw env.Target + 2u, offset(env.Target)
+            let copyField (acc: Asm) (fieldOffset: int, _) =
+                acc.AddText([
+                    (RV.LW(Reg.r(env.Target + 2u), Imm12(fieldOffset * 4),
+                           Reg.r(env.Target + 1u)),
+                     $"Load copied struct field at offset %d{fieldOffset}")
+                    (RV.SW(Reg.r(env.Target + 2u), Imm12(fieldOffset * 4),
+                           Reg.r(env.Target)),
+                     $"Store copied struct field at offset %d{fieldOffset}")
+                ])
+            let fieldsCopyCode =
+                List.fold copyField (Asm()) (List.indexed fields)
+
+            targetCode ++ structAllocCode ++ fieldsCopyCode
+        | (t: Type) ->
+            failwith $"BUG: copy codegen on invalid target type: %O{t}"
+
+    | DeepCopy(target) ->
+        match (expandType node.Env target.Type) with
+        | TStruct(fields) ->
+            doCodegen env target
+            let tmpName = Util.genSymbol "__deepcopy_target"
+            let tmpVar = { target with Expr = Var(tmpName) }
+
+            let mkFieldNode (fieldName, fieldType) =
+                let fieldSelect: TypedAST =
+                    { Pos = node.Pos
+                      Env = node.Env
+                      Type = fieldType
+                      Expr = FieldSelect(tmpVar, fieldName) }
+                
+                let fieldInit =
+                    match (expandType node.Env fieldType) with
+                    | TStruct(_) -> 
+                        let structExpr = DeepCopy(fieldSelect)
+                        ({ Pos = node.Pos
+                           Env = node.Env
+                           Type = fieldType
+                           Expr = structExpr
+                        }: TypedAST)
+                    | _ -> fieldSelect
+                
+                (fieldName, fieldInit)
+
+            let newFields = List.map mkFieldNode fields
+            let copiedStruct: TypedAST =
+                { Pos = node.Pos
+                  Env = node.Env
+                  Type = target.Type
+                  Expr = StructCons(newFields)
+                }
+
+            let lowered: TypedAST =
+                { Pos = node.Pos
+                  Env = node.Env
+                  Type = target.Type
+                  Expr = Let(tmpName, target, copiedStruct) }
+
+            doCodegen env lowered
+        | (t: Type) ->
+            failwith $"BUG: deepcopy codegen on invalid target type: %O{t}"
 
 /// Generate code to save the given registers on the stack, before a RARS system
 /// call. Register a7 (which holds the system call number) is backed-up by

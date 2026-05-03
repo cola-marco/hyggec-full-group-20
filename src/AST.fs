@@ -249,6 +249,10 @@ and Expr<'E,'T> =
     /// programs.
     | Pointer of addr: uint
 
+    | Copy of arg: Node<'E,'T>
+
+    | DeepCopy of arg: Node<'E,'T>
+
     /// Constructor of a discriminated union type instance, with a label and an
     /// expression.
     | UnionCons of label: string
