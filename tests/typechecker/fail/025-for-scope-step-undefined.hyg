@@ -1,0 +1,4 @@
+for(let mutable i = 0; i < 2; j <- j + 1) {
+    let mutable j = 0;
+    j <- j + 1
+}

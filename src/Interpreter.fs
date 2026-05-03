@@ -484,13 +484,31 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                            {body with Expr = UnitVal})
         Some(env, {node with Expr = rewritten})
 
+    | DoWhile(body, cond) ->
+        /// Rewritten 'do...while' loop:
+        /// first evaluate 'body' and bind its value to a temporary variable;
+        /// then, if 'cond' is true, repeat the whole loop; otherwise return x.
+        let x = "__dowhile_result"
+        let ifNode =
+            { body with Expr = If(cond, node, { body with Expr = Var x }) }
+        let rewritten = Let(x, body, ifNode)
+        Some(env, { node with Expr = rewritten })
+
     | For(name,init,cond,step,body) ->
         /// Rewritten 'for' loop 
+        /// let mutable x = 0;
+        /// if(cond) { body; step; for(x=x; cond; step) {} } else{}
+       
+        let varNode = {node with Expr = Var(name)}
+    
+        let nextFor = {node with Expr = For(name, varNode, cond, step, body)}
+        let ifTrue = {body with Expr = Seq([body; step; nextFor])}
+        let ifFalse = {body with Expr = UnitVal}
+
+        let ifNode = {node with Expr = If(cond, ifTrue, ifFalse)}
+        let rewritten = LetMut(name, init, ifNode)
+        Some(env, {node with Expr = rewritten})
         
-        let loopBody = {body with Expr = Seq([body; step])}
-        let nextloop = {body with Expr = While(cond, loopBody)}
-        let rewritten = LetMut(name, init, nextloop)
-        Some(env, {node with Expr = rewritten})  
 
     | Application(expr, args) ->
         match expr.Expr with
@@ -556,6 +574,51 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
         | None -> None
     | FieldSelect(_, _) -> None
 
+    | Copy({Expr = Pointer(addr)}) -> 
+        match (env.PtrInfo.TryFind addr) with
+        | Some(fields) ->
+            let fieldNodes = 
+                fields |> List.mapi (fun i _ -> env.Heap.[addr + uint i])
+            let (heap': Heap<'E,'T>,baseAddr) = heapAlloc env.Heap fieldNodes
+            let ptrInfo' = env.PtrInfo.Add(baseAddr, fields)
+            Some({env with Heap = heap'; PtrInfo = ptrInfo'}, {node with Expr = Pointer(baseAddr)})
+
+    // Shallow Copy
+    | Copy({Expr = StructCons(fields)}) ->
+        Some(env, {node with Expr = StructCons(fields)})
+
+    // Deep Copy
+    | DeepCopy({Expr = Pointer(addr)}) ->
+        let rec copyStruct(heap : Heap<'E,'T>, pInfo: Map<uint, string list>, currAddr :uint) : Heap<'E,'T> * Map<uint, string list> * uint = 
+            match (pInfo.TryFind currAddr) with
+            | Some fields -> 
+                let (heap',pInfo', nodeList) = 
+                    List.fold (fun (h: Heap<'E,'T>,  p: Map<uint, string list>, nodeList : Node<'E,'T> list) (i : int) -> 
+                        let fieldVal = h.[currAddr + uint i]
+                        match fieldVal.Expr with
+                        // nextAddr is the next position in heap  
+                        | Pointer(nextAddr) ->
+                            let (h',p',assignedAddr) = copyStruct(h,p,nextAddr)
+                            let ptr = {fieldVal with Expr = Pointer(assignedAddr)}
+                            (h',p',ptr :: nodeList)
+                        | _ ->
+                            (h,p, fieldVal :: nodeList)
+                    ) (heap, pInfo, []) [0 .. fields.Length - 1]
+                
+                let nodeListRev = List.rev nodeList
+                let (heap'', baseAddr) = heapAlloc heap' nodeListRev
+                let pInfo'' = pInfo'.Add(baseAddr, fields)
+                (heap'', pInfo'', baseAddr)     
+            | None ->
+                (heap, pInfo, currAddr)
+
+        match env.PtrInfo.TryFind addr with
+        | Some _ ->
+            let (heap', pInfo', baseAddr) = copyStruct(env.Heap, env.PtrInfo,addr)
+            Some({env with Heap = heap'; PtrInfo = pInfo'}, {node with Expr = Pointer(baseAddr)})
+        | None -> None
+
+        
     | UnionCons(label, expr) ->
         match (reduce env expr) with
         | Some(env', expr') -> Some(env', {node with Expr = UnionCons(label, expr')})

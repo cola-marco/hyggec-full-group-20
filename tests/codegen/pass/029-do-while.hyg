@@ -1,0 +1,8 @@
+let mutable x = 0;
+let mutable sum = 0;
+do {
+    sum <- sum + x;
+    x <- x + 1;
+    sum
+} while x < 4;
+assert(sum = 6)

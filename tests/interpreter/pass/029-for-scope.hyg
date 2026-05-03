@@ -1,10 +1,5 @@
-for(let mutable x= 0; x < 3; x<- x+1) {
-    print(x)
+let mutable sum = 0;
+for(let mutable x = 0 ; x < 4; x <- x + 1) {
+    sum <- sum + x
 };
-
-let a = 0;
-let mutable s = 0;
-for(let mutable x = a + 1 ; x < a + 3; x <- x + 1) {
-    s <- s + x
-};
-assert(s = 3)
+assert(sum = 6)

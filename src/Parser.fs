@@ -320,6 +320,15 @@ let pStructCons =
         |>> fun ((tok1, fields), tok2) ->
             mkNode (AST.Expr.StructCons fields) tok1.Begin tok1.Begin tok2.End
 
+let pCopy = 
+    pToken COPY ->>- (pToken LPAREN >>- pSimpleExpr) ->>- pToken RPAREN
+    |>> fun ((tok1, expr), tok2) ->
+            mkNode (AST.Expr.Copy expr) tok1.Begin tok1.Begin tok2.End
+
+let pDeepCopy = 
+    pToken DEEPCOPY ->>- (pToken LPAREN >>- pSimpleExpr) ->>- pToken RPAREN
+    |>> fun ((tok1, expr), tok2) ->
+            mkNode (AST.Expr.DeepCopy expr) tok1.Begin tok1.Begin tok2.End
 
 /// Parse a sequence of one or more dot-separated identifiers (representing
 /// field names in a sequence of fields selections, e.g. 'field1.field2.field3').
@@ -343,6 +352,8 @@ let pPrimary = choice [
                     pUnionCons // IMPORTANT: try parsing this before 'pVariable'
                     pVariable
                     pStructCons
+                    pCopy
+                    pDeepCopy
                ] >>= fun node ->
                     // If the expression is followed by a dot, then it is a
                     // field selection. If so, parse and accumulate as many
@@ -550,6 +561,10 @@ let pSimpleExpr' = choice [
     pToken WHILE ->>- pSimpleExpr ->>- (pToken DO >>- pSimpleExpr)
         |>> fun ((tok, cond), body) ->
             mkNode (AST.Expr.While (cond, body)) tok.Begin tok.Begin body.Pos.End
+
+    pToken DO ->>- pSimpleExpr ->>- (pToken WHILE >>- pSimpleExpr)
+        |>> fun ((tok, body), cond) ->
+            mkNode (AST.Expr.DoWhile (body, cond)) tok.Begin tok.Begin cond.Pos.End
     
     pToken FOR ->>-
         (pToken LPAREN >>-                              // (

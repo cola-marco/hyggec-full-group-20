@@ -221,9 +221,14 @@ and Expr<'E,'T> =
     | While of cond: Node<'E,'T>
              * body: Node<'E,'T>
 
-    // 'For' loop with a Scoed Variable: as long as 'cond' is true, repeat the 'body'.
+    /// 'Do-While' loop: execute 'body' once, then as long as 'cond' is true,
+    /// repeat the 'body'. Returns the value of the last execution of 'body'.
+    | DoWhile of body: Node<'E,'T>
+             * cond: Node<'E,'T>
+
+    // 'For' loop with a Scoped Variable: as long as 'cond' is true, repeat the 'body'.
     | For of name: string       // let mutable x
-            * init: Node<'E,'T> // any value
+            * init: Node<'E,'T> // var or expression
             * cond: Node<'E,'T> // boolean condition
             * step: Node<'E,'T> // step expresion
             * body: Node<'E,'T> // body expression
@@ -250,6 +255,10 @@ and Expr<'E,'T> =
     /// result; it has no syntax in the parser, so it cannot be written in Hygge
     /// programs.
     | Pointer of addr: uint
+
+    | Copy of arg: Node<'E,'T>
+
+    | DeepCopy of arg: Node<'E,'T>
 
     /// Constructor of a discriminated union type instance, with a label and an
     /// expression.

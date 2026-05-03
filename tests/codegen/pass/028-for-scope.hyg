@@ -1,5 +1,5 @@
 let mutable sum = 0;
-for(let mutable x = 0; x < 4; x <- x + 1) {
+for(let mutable x = 0 ; x < 4; x <- x + 1) {
     sum <- sum + x
 };
 assert(sum = 6)

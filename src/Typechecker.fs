@@ -493,6 +493,17 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
         | Error(es), Ok(_) -> Error(es)
         | Error(esCond), Error(esBody) -> Error(esCond @ esBody)
 
+    | DoWhile(body, cond) ->
+        match ((typer env body), (typer env cond)) with
+        | (Ok(tbody), Ok(tcond)) when (isSubtypeOf env tcond.Type TBool) ->
+            Ok { Pos = node.Pos; Env = env; Type = tbody.Type; Expr = DoWhile(tbody, tcond)}
+        | (Ok(_), Ok(tcond)) ->
+            Error([(tcond.Pos, $"'do...while' condition: expected type %O{TBool}, "
+                                + $"found %O{tcond.Type}")])
+        | Ok(_), Error(es) -> Error(es)
+        | Error(es), Ok(_) -> Error(es)
+        | Error(esBody), Error(esCond) -> Error(esBody @ esCond)
+
     | For(name, init, cond, step, body) ->
         let rInit = typer env init
         let forEnv =
@@ -631,6 +642,34 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
     | Pointer(_) ->
         Error([(node.Pos, "pointers cannot be type-checked (by design!)")])
 
+    | Copy(arg) -> 
+        match (typer env arg) with
+        | Ok(targ) ->
+            match (expandType env targ.Type) with
+            | TStruct(_) -> 
+                Ok { Pos = node.Pos; 
+                     Env = env; 
+                     Type = targ.Type; 
+                     Expr = Copy(targ) }
+            | _ -> 
+                Error([(node.Pos, $"copy: expected argument of struct type, found %O{targ.Type}")])
+        | Error(es) -> 
+            Error(es)
+
+    | DeepCopy(arg) ->
+        match (typer env arg) with
+        | Ok(targ) ->
+            match (expandType env targ.Type) with
+            | TStruct(_) ->
+                Ok { Pos = node.Pos;
+                     Env = env;
+                     Type = targ.Type;
+                     Expr = DeepCopy(targ) }
+            | _ ->
+                Error([(node.Pos, $"deepcopy: expected argument of struct type, found %O{targ.Type}")])
+        | Error(es) ->
+            Error(es)
+            
     | UnionCons(label, expr) ->
         match (typer env expr) with
         | Ok(texpr) ->

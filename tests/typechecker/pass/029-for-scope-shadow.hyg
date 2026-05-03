@@ -1,0 +1,7 @@
+let x = 100;
+let mutable sum = 0;
+for(let mutable x = 0; x < 3; x <- x + 1) {
+    sum <- sum + x
+};
+assert(sum = 3);
+assert(x = 100)

@@ -106,6 +106,11 @@ let rec substVar (node: Node<'E,'T>) (var: string) (var2: string): Node<'E,'T> =
         let substCond = substVar cond var var2
         let substBody = substVar body var var2
         {node with Expr = While(substCond, substBody)}
+    
+    | DoWhile(body, cond) ->
+        let substBody = substVar body var var2
+        let substCond = substVar cond var var2
+        {node with Expr = DoWhile(substBody, substCond)}
 
     | Assertion(arg) ->
         {node with Expr = Assertion(substVar arg var var2)}
@@ -333,6 +338,16 @@ let rec internal toANFDefs (node: Node<'E,'T>): Node<'E,'T> * ANFDefs<'E,'T> =
         let bodyANF = toANF (toANFDefs body)
         /// Definition binding this expression in ANF to its variable
         let anfDef = ANFDef(false, {node with Expr = While(condANF, bodyANF)})
+
+        ({node with Expr = Var(anfDef.Var)}, [anfDef])
+
+    | DoWhile(body, cond) ->
+        /// Body expression in ANF and related definitions
+        let bodyANF = toANF (toANFDefs body)
+        /// Condition expression in ANF
+        let condANF = toANF (toANFDefs cond)
+        /// Definition binding this expression in ANF to its variable
+        let anfDef = ANFDef(false, {node with Expr = DoWhile(bodyANF, condANF)})
 
         ({node with Expr = Var(anfDef.Var)}, [anfDef])
 

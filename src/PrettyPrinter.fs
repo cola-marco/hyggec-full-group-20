@@ -159,7 +159,9 @@ let rec internal formatASTRec (node: AST.Node<'E,'T>): Tree =
     | While(cond, body) ->
         mkTree $"While" node [("cond", formatASTRec cond)
                               ("body", formatASTRec body)]
-    
+    | DoWhile(body, cond) ->
+        mkTree $"DoWhile" node [("body", formatASTRec body);
+                                 ("cond", formatASTRec cond)]
     | For(name,init, cond, step, body) ->
         mkTree $"For" node [("init", formatASTRec init)
                             ("cond", formatASTRec cond)
@@ -187,6 +189,10 @@ let rec internal formatASTRec (node: AST.Node<'E,'T>): Tree =
         mkTree $"FieldSelect %s{field}" node [("expr", formatASTRec target)]
     | Pointer(addr) ->
         mkTree $"Pointer 0x%x{addr}" node []
+    | Copy(arg) ->
+        mkTree "Copy" node [("arg", formatASTRec arg)]
+    | DeepCopy(arg) ->
+        mkTree "DeepCopy" node [("arg", formatASTRec arg)]
     | UnionCons(label, expr) ->
         mkTree $"UnionCons %s{label}" node [("expr", formatASTRec expr)]
     | Match(expr, cases) ->

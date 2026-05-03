@@ -1,0 +1,10 @@
+let mutable outerSum = 0;
+let mutable innerSum = 0;
+for(let mutable x = 0; x < 3; x <- x + 1) {
+    outerSum <- outerSum + x;
+    for(let mutable x = 0; x < 2; x <- x + 1) {
+        innerSum <- innerSum + x
+    }
+};
+assert(outerSum = 3);
+assert(innerSum = 3)

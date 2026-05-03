@@ -1,0 +1,5 @@
+let x = struct{a=3;b=2};
+let y = copy(x);
+y.a <- 6;
+assert(y.a = 6);
+assert(x.a = 3)

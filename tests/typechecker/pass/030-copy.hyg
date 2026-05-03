@@ -1,0 +1,9 @@
+let inner: struct {f: int} = struct {f = 1};
+let x: struct {a: struct {f: int}; b: int} = struct {a = inner; b = 0};
+let y: struct {a: struct {f: int}; b: int} = copy(x);
+y.b <- 1;
+y.a.f <- 2;
+assert(y.b = 1);
+assert(x.b = 0);
+assert(y.a.f = 2);
+assert(x.a.f = 2)
