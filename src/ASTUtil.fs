@@ -77,6 +77,10 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
         // Propagate the substitution in the "let" scope
         {node with Expr = LetT(vname, tpe, (subst init var sub),
                                (subst scope var sub))}
+    | LetRec(vname, tpe, init, scope) ->
+        // Propagate the substitution in the "let" scope
+        {node with Expr = LetRec(vname, tpe, (subst init var sub),
+                               (subst scope var sub))}
 
     | LetMut(vname, init, scope) when vname = var ->
         // Do not substitute the variable in the "let mutable" scope
