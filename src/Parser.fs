@@ -113,7 +113,7 @@ let pPretypesCommaSeq =
 let pParenPretypesCommaSeq = choice [
     pToken LIT_UNIT >>- preturn []
     pToken LPAREN >>- pPretypesCommaSeq ->> pToken RPAREN
-]
+] 
 
 
 /// Parse a non-empty sequence of identifiers with type ascriptions, separated
@@ -135,6 +135,10 @@ let pIdentPretypesSemiSeq =
 
 /// Parse a pretype, producing a PretypeNode.
 let pPretype' = choice [
+    // Array type
+    pToken ARRAY ->>- (pToken LCURLY >>- pPretype) ->>- pToken RCURLY
+        |>> fun ((tok1, tpe), tok2) ->
+            mkPretypeNode (AST.Pretype.TArray tpe) tok1.Begin tok1.Begin tok2.End
     pIdent
         |>> fun (tok, name) ->
             mkPretypeNode (AST.Pretype.TId name) tok.Begin tok.Begin tok.End
@@ -150,6 +154,7 @@ let pPretype' = choice [
     pToken UNION ->>- (pToken LCURLY >>- pIdentPretypesSemiSeq) ->>- pToken RCURLY
         |>> fun ((tok1, cases), tok2) ->
             mkPretypeNode (AST.Pretype.TUnion cases) tok1.Begin tok1.Begin tok2.End
+    
 ]
 
 
@@ -335,6 +340,106 @@ let pFieldDotSeq =
                 fun acc field ->
                     acc @ field)
 
+/// Parse a array value construction.
+let pArrayCons =
+    pToken ARRAY ->>- (pToken LPAREN >>- pSimpleExpr) ->>- (pToken COMMA >>- pSimpleExpr ->>- pToken RPAREN)
+        |>> fun ((tok1, numberOfElements), (initialValue, tok2)) ->
+            mkNode (AST.Expr.ArrayCons (numberOfElements, initialValue)) tok1.Begin tok1.Begin tok2.End
+
+
+/// Parse a array value construction.
+let pArrayElem =
+    pToken ARRAYELEM ->>- (pToken LPAREN >>- pVariable) ->>- (pToken COMMA >>- pSimpleExpr ->>- pToken RPAREN)
+        |>> fun ((tok1, name), (index, tok2)) ->
+            mkNode (AST.Expr.ArrayElem (name, index)) tok1.Begin tok1.Begin tok2.End
+
+let pArrayLength =
+    pToken ARRAYLENGTH ->>- (pToken LPAREN >>- pVariable) ->>- pToken RPAREN
+        |>> fun ((tok1, name), tok2) ->
+            mkNode (AST.Expr.ArrayLength name) tok1.Begin tok1.Begin tok2.End
+
+let pSlice =
+    pToken SLICE ->>- (pToken LPAREN >>- pSimpleExpr) ->>- (pToken COMMA >>- pSimpleExpr) ->>- (pToken COMMA >>- pSimpleExpr ->>- pToken RPAREN)
+        |>> fun (((tokSlice, arrayExpr), loExpr), (hiExpr, tokR)) ->
+            let loopVarName = "__slice_i"
+
+            let sizeWithoutOffset =
+                mkNode (AST.Expr.BinNumOp (AST.NumericalOp.Sub, hiExpr, loExpr))
+                       loExpr.Pos.Begin loExpr.Pos.Begin hiExpr.Pos.End
+
+            let sizeExpr =
+                mkNode (AST.Expr.BinNumOp (AST.NumericalOp.Add,
+                                            sizeWithoutOffset,
+                                            mkNode (AST.Expr.IntVal 1) loExpr.Pos.Begin loExpr.Pos.Begin loExpr.Pos.Begin))
+                       tokSlice.Begin sizeWithoutOffset.Pos.Begin tokR.End
+
+            let arrayInit =
+                mkNode (AST.Expr.ArrayElem (arrayExpr, loExpr))
+                       tokSlice.Begin arrayExpr.Pos.Begin loExpr.Pos.End
+
+            let arrayCons =
+                mkNode (AST.Expr.ArrayCons (sizeExpr, arrayInit))
+                       tokSlice.Begin tokSlice.Begin tokR.End
+
+            let resultArrayVarName = "__slice_array"
+            let resultArrayVar =
+                mkNode (AST.Expr.Var resultArrayVarName)
+                       tokSlice.Begin tokSlice.Begin tokR.End
+
+            let loopIndexVar =
+                mkNode (AST.Expr.Var loopVarName)
+                       tokSlice.Begin tokSlice.Begin tokR.End
+
+            let stepExpr =
+                let increment =
+                    mkNode (AST.Expr.BinNumOp (AST.NumericalOp.Add,
+                                                loopIndexVar,
+                                                mkNode (AST.Expr.IntVal 1) tokSlice.Begin tokSlice.Begin tokSlice.Begin))
+                           tokSlice.Begin loopIndexVar.Pos.Begin tokR.End
+                mkNode (AST.Expr.Assign (loopIndexVar, increment))
+                       tokSlice.Begin loopIndexVar.Pos.Begin increment.Pos.End
+
+            let condExpr =
+                mkNode (AST.Expr.BinRelOp (AST.RelationalOp.Less, loopIndexVar, sizeExpr))
+                       tokSlice.Begin loopIndexVar.Pos.Begin sizeExpr.Pos.End
+
+            let srcIndex =
+                mkNode (AST.Expr.BinNumOp (AST.NumericalOp.Add,
+                                            loExpr,
+                                            loopIndexVar))
+                       loExpr.Pos.Begin loExpr.Pos.Begin tokR.End
+
+            let readElem =
+                mkNode (AST.Expr.ArrayElem (arrayExpr, srcIndex))
+                       tokSlice.Begin arrayExpr.Pos.Begin srcIndex.Pos.End
+
+            let writeElemIndex =
+                mkNode (AST.Expr.Var loopVarName)
+                       tokSlice.Begin tokSlice.Begin tokR.End
+
+            let writeElem =
+                mkNode (AST.Expr.ArrayElem (resultArrayVar, writeElemIndex))
+                       tokSlice.Begin resultArrayVar.Pos.Begin writeElemIndex.Pos.End
+
+            let bodyExpr =
+                mkNode (AST.Expr.Assign (writeElem, readElem))
+                       tokSlice.Begin writeElem.Pos.Begin readElem.Pos.End
+
+            let forExpr =
+                mkNode (AST.Expr.For (loopVarName,
+                                      mkNode (AST.Expr.IntVal 0) tokSlice.Begin tokSlice.Begin tokSlice.Begin,
+                                      condExpr,
+                                      stepExpr,
+                                      bodyExpr))
+                       tokSlice.Begin tokSlice.Begin tokR.End
+
+            let seqExpr =
+                mkNode (AST.Expr.Seq [forExpr; resultArrayVar])
+                       tokSlice.Begin tokSlice.Begin tokR.End
+
+            mkNode (AST.Expr.Let (resultArrayVarName, arrayCons, seqExpr))
+                   tokSlice.Begin tokSlice.Begin tokR.End
+
 
 /// Parse a primary expression.
 let pPrimary = choice [
@@ -343,6 +448,10 @@ let pPrimary = choice [
                     pUnionCons // IMPORTANT: try parsing this before 'pVariable'
                     pVariable
                     pStructCons
+                    pArrayCons
+                    pSlice
+                    pArrayElem
+                    pArrayLength
                ] >>= fun node ->
                     // If the expression is followed by a dot, then it is a
                     // field selection. If so, parse and accumulate as many
@@ -536,6 +645,35 @@ let pMatchCases =
                     // with label, variable, and expression; accumulate it with acc
                     List.append acc matchCase)
 
+/// Xifeng's original for implementation with scoped variable
+let pForScopedExpr =
+    pToken LET >>- pToken MUTABLE >>- pIdent ->>-   // let mutable x
+        (pToken EQ >>- pSimpleExpr) ->>-                // =
+        (pToken SEMI >>- pSimpleExpr) ->>-              // ; ec
+        (pToken SEMI >>- pSimpleExpr)              // ; eu
+    |>> fun ((((tok, name), ei), ec), eu) ->
+        (((((tok, name), ei), ec), eu), None)
+
+/// for each loop syntax sugar
+let pForInExpr =
+    pIdent ->>- (pToken IN >>- pSimpleExpr)
+    |>> fun ((tok, varName), arrayExpr) ->
+        let loopVarName = "__i"
+        let initExpr = mkNode (AST.Expr.IntVal 0) tok.Begin tok.Begin tok.End
+        let condExpr = 
+            mkNode (AST.Expr.BinRelOp(AST.RelationalOp.Less,
+                                      mkNode (AST.Expr.Var loopVarName) tok.Begin tok.Begin tok.End,
+                                      mkNode (AST.Expr.ArrayLength arrayExpr) tok.Begin tok.Begin arrayExpr.Pos.End))
+                   tok.Begin tok.Begin arrayExpr.Pos.End
+        let addOneExpr = mkNode (AST.Expr.BinNumOp(AST.NumericalOp.Add,
+                                                    mkNode (AST.Expr.Var loopVarName) tok.Begin tok.Begin tok.End,
+                                                    mkNode (AST.Expr.IntVal 1) tok.Begin tok.Begin tok.End))
+                                tok.Begin tok.Begin tok.End
+        let stepExpr = 
+            mkNode (AST.Expr.Assign(mkNode (AST.Expr.Var loopVarName) tok.Begin tok.Begin tok.End,
+                                    addOneExpr))
+                   tok.Begin tok.Begin tok.End
+        (((((tok, loopVarName), initExpr), condExpr), stepExpr), Some(varName, arrayExpr))
 
 /// Parse a "simple" expression, which (unlike the more general 'pExpr') cannot
 /// result in a 'Seq'uence of sub-expressions, unless they are explicitly
@@ -557,13 +695,20 @@ let pSimpleExpr' = choice [
     
     pToken FOR ->>-
         (pToken LPAREN >>-                              // (
-        pToken LET >>- pToken MUTABLE >>- pIdent ->>-   // let mutable x
-        (pToken EQ >>- pSimpleExpr) ->>-                // =
-        (pToken SEMI >>- pSimpleExpr) ->>-              // ; ec
-        (pToken SEMI >>- pSimpleExpr) ->>-              // ; eu
+        choice [
+            pForInExpr
+            pForScopedExpr
+        ] ->>-
         (pToken RPAREN >>- pSimpleExpr))                //) eb
-            |>> fun(tokFor,(((((_,name),ei),ec),eu),eb)) ->
-                mkNode (AST.Expr.For (name, ei, ec, eu, eb))
+            |>> fun(tokFor,((((((_,name),ei),ec),eu),subst),eb)) ->
+                let finalBody = 
+                    match subst with
+                    | None -> eb
+                    | Some(varName, arrayExpr) ->
+                        let indexVar = mkNode (AST.Expr.Var "__i") tokFor.Begin tokFor.Begin tokFor.End
+                        let arrayElemExpr = mkNode (AST.Expr.ArrayElem(arrayExpr, indexVar)) tokFor.Begin tokFor.Begin tokFor.End
+                        ASTUtil.subst eb varName arrayElemExpr
+                mkNode (AST.Expr.For (name, ei, ec, eu, finalBody))
                        tokFor.Begin tokFor.Begin eb.Pos.End
 
     // Lambda expression: fun (args) -> body

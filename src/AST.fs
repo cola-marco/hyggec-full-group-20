@@ -45,6 +45,8 @@ and Pretype =
     | TStruct of fields: List<string * PretypeNode>
     /// Discriminated union type.  Each case consists of a name and a pretype.
     | TUnion of cases: List<string * PretypeNode>
+    /// Array type. Every element has same pretype
+    | TArray of tpe: PretypeNode
 
 
 /// Operation type used to distinguish binary numerical expressions.
@@ -259,6 +261,20 @@ and Expr<'E,'T> =
     /// match case value).
     | Match of expr: Node<'E,'T>
              * cases: List<string * string * Node<'E,'T>>
+    
+    /// Constructor of a Array instance. 
+    /// Array has a size and an inital value shared by all elements
+    | ArrayCons of size: Node<'E,'T>
+                 * init: Node<'E,'T>
+    
+    /// Array element accessor. 
+    /// Takes the identifier of the array and the index of the element to be accessed
+    | ArrayElem of name: Node<'E,'T>
+                 * index: Node<'E,'T>
+
+    /// Array element accessor. 
+    /// Takes the identifier of the array and the index of the element to be accessed
+    | ArrayLength of name: Node<'E,'T>
 
 
 /// A type alias for an untyped AST, where there is no typing environment nor
