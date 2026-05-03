@@ -141,6 +141,20 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
         let cases2 = List.map substCase cases
         {node with Expr = Match((subst expr var sub), cases2)}
 
+    | ArrayCons(size, init) ->
+        let substSize = subst size var sub
+        let substInit = subst init var sub
+        {node with Expr = ArrayCons(substSize, substInit)}
+    
+    | ArrayLength(arr) ->
+        let substArr= subst arr var sub
+        {node with Expr = ArrayLength(substArr)}
+
+    | ArrayElem(arr, index) ->
+        let substArr= subst arr var sub
+        let substIndex= subst index var sub
+        {node with Expr = ArrayElem(substArr, substIndex)}
+
 /// Compute the set of free variables in the given AST node.
 let rec freeVars (node: Node<'E,'T>): Set<string> =
     match node.Expr with
@@ -207,6 +221,12 @@ let rec freeVars (node: Node<'E,'T>): Set<string> =
         /// Free variables in all match continuations
         let fvConts = List.fold folder Set[] cases
         Set.union (freeVars expr) fvConts
+    | ArrayCons(size, init) -> 
+        Set.union (freeVars size) (freeVars init)
+    | ArrayLength(arr) -> 
+        freeVars arr
+    | ArrayElem(arr, index) -> 
+        Set.union (freeVars arr) (freeVars index)
 
 /// Compute the union of the free variables in a list of AST nodes.
 and internal freeVarsInList (nodes: List<Node<'E,'T>>): Set<string> =

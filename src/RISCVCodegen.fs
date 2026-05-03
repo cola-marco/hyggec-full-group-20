@@ -632,6 +632,33 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
                 selTargetCode ++ rhsCode ++ assignCode
             | t ->
                 failwith $"BUG: field selection on invalid object type: %O{t}"
+        | ArrayElem(arrayExpr, indexExpr) ->
+            /// Compile the array expression to get the pointer in target register
+            let arrayCode = doCodegen env arrayExpr
+            /// Compile the index expression to target+1 register
+            let indexCode = doCodegen {env with Target = env.Target + 1u} indexExpr
+            /// Compile the rhs to target+2 register, leaving the index in target+1
+            let rhsCode = doCodegen {env with Target = env.Target + 2u} rhs
+            /// Calculate element address: base + 4 + index*4
+            let addrCalcCode =
+                Asm([
+                    (RV.ADDI(Reg.r(env.Target + 3u), Reg.r(env.Target + 1u), Imm12(1)), "offset_index = 1 + index")
+                    (RV.SLLI(Reg.r(env.Target + 3u), Reg.r(env.Target + 3u), Shamt(2u)), "offset_index = offset_index * 4")
+                    (RV.ADD(Reg.r(env.Target + 3u), Reg.r(env.Target), Reg.r(env.Target + 3u)), "element_addr = base + offset")
+                ])
+            /// Assembly code that performs the array element assignment
+            let assignCode =
+                match rhs.Type with
+                | t when (isSubtypeOf rhs.Env t TUnit) ->
+                    Asm()
+                | t when (isSubtypeOf rhs.Env t TFloat) ->
+                    Asm(RV.FSW_S(FPReg.r(env.FPTarget), Imm12(0), Reg.r(env.Target + 3u)),
+                        "Store float value to array element")
+                | _ ->
+                    Asm(RV.SW(Reg.r(env.Target + 2u), Imm12(0), Reg.r(env.Target + 3u)),
+                        "Store value to array element")
+            /// Put everything together
+            arrayCode ++ indexCode ++ rhsCode ++ addrCalcCode ++ assignCode
         | _ ->
             failwith ($"BUG: assignment to invalid target:%s{Util.nl}"
                       + $"%s{PrettyPrinter.prettyPrint lhs}")
@@ -908,6 +935,107 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
 
     | Pointer(_) ->
         failwith "BUG: pointers cannot be compiled (by design!)"
+    | ArrayCons(size, init) ->
+        /// Compile size first to have it available and keep it in r(Target)
+        let compiledSize = doCodegen env size
+        
+        /// Allocate heap space for the array: size+1 elements (first for length)
+        let sizeAllocCode =
+            (beforeSysCall [Reg.a0] [])
+                .AddText([
+                    RV.ADDI(Reg.a0, Reg.r(env.Target), Imm12(1)), "a0 = size + 1"
+                    RV.SLLI(Reg.a0, Reg.a0, Shamt(2u)), "a0 = (size + 1) * 4 bytes"
+                    RV.LI(Reg.a7, 9), "RARS syscall: Sbrk"
+                    RV.ECALL, ""
+                    RV.MV(Reg.r(env.Target + 1u), Reg.a0),
+                    "Move syscall result (array mem address) to target+1"
+                ])
+                ++ afterSysCall [Reg.a0] []
+        
+        /// Store the size at offset 0
+        let storeSizeCode =
+            Asm(RV.SW(Reg.r(env.Target), Imm12(0), Reg.r(env.Target + 1u)),
+                "Store array size at offset 0")
+        
+        /// Compile init to target+2u (so it won't overwrite size in r(Target))
+        let initCode =
+            doCodegen {env with Target = env.Target + 2u} init
+        
+        /// Create a loop to initialize all elements starting at offset 4
+        let loopLabel = Util.genSymbol "array_init_loop"
+        let loopEndLabel = Util.genSymbol "array_init_end"
+        let initLoopCode =
+            Asm(RV.LI(Reg.r(env.Target + 3u), 0), "Initialize loop counter to 0")
+                .AddText(RV.LABEL(loopLabel), "Array initialization loop")
+                .AddText(RV.BEQ(Reg.r(env.Target + 3u), Reg.r(env.Target), loopEndLabel),
+                         "Exit loop when counter == size")
+                .AddText([
+                    RV.ADDI(Reg.r(env.Target + 4u), Reg.r(env.Target + 3u), Imm12(1)), "offset = counter + 1"
+                    RV.SLLI(Reg.r(env.Target + 4u), Reg.r(env.Target + 4u), Shamt(2u)), "offset = offset * 4"
+                    RV.ADD(Reg.r(env.Target + 4u), Reg.r(env.Target + 1u), Reg.r(env.Target + 4u)), "address = base + offset"
+                ])
+                .AddText([
+                    match init.Type with
+                    | t when isSubtypeOf init.Env t TUnit ->
+                        RV.NOP, ""
+                    | t when isSubtypeOf init.Env t TFloat ->
+                        RV.FSW_S(FPReg.r env.FPTarget, Imm12 0, Reg.r(env.Target + 4u)),
+                        "Store init value (float)"
+                    | _ ->
+                        RV.SW(Reg.r(env.Target + 2u), Imm12 0, Reg.r(env.Target + 4u)),
+                        "Store init value"
+                ])
+                .AddText([
+                    RV.ADDI(Reg.r(env.Target + 3u), Reg.r(env.Target + 3u), Imm12(1)), "counter++"
+                    RV.LA(Reg.r(env.Target + 4u), loopLabel), "Load loop start address"
+                    RV.JR(Reg.r(env.Target + 4u)), "Jump to loop start"
+                ])
+                .AddText(RV.LABEL loopEndLabel, "End of array initialization")
+        
+        compiledSize ++ sizeAllocCode ++ storeSizeCode ++ initCode ++ initLoopCode
+            .AddText(RV.MV(Reg.r env.Target, Reg.r(env.Target + 1u)),
+                     "Move array pointer result to target register")
+
+    | ArrayElem(array, index) ->
+        /// Compile array expression to get pointer in target
+        let arrayCode = doCodegen env array
+        /// Compile index to target+1
+        let indexCode =
+            (doCodegen {env with Target = env.Target + 1u} index)
+                .AddText(RV.MV(Reg.r(env.Target + 2u), Reg.r(env.Target + 1u)),
+                         "Save index to a temporary register")
+        
+        /// Calculate address: base + 4 + index*4 = base + 4*(1+index)
+        let addrCalcCode =
+            Asm([
+                (RV.ADDI(Reg.r(env.Target + 2u), Reg.r(env.Target + 2u), Imm12(1)), "offset_index = 1 + index")
+                (RV.SLLI(Reg.r(env.Target + 2u), Reg.r(env.Target + 2u), Shamt(2u)), "offset_index = offset_index * 4")
+                (RV.ADD(Reg.r(env.Target + 2u), Reg.r(env.Target), Reg.r(env.Target + 2u)), "element_addr = base + offset")
+            ])
+        
+        /// Load the element from memory at the computed address
+        let loadElemCode =
+            match node.Type with
+            | t when (isSubtypeOf node.Env t TUnit) ->
+                Asm()
+            | t when (isSubtypeOf node.Env t TFloat) ->
+                Asm(RV.FLW_S(FPReg.r(env.FPTarget), Imm12(0), Reg.r(env.Target + 2u)),
+                    "Load array element (float)")
+            | _ ->
+                Asm(RV.LW(Reg.r(env.Target), Imm12(0), Reg.r(env.Target + 2u)),
+                    "Load array element")
+        
+        arrayCode ++ indexCode ++ addrCalcCode ++ loadElemCode
+
+    | ArrayLength(array) ->
+        /// Compile array expression to get pointer in target
+        let arrayCode = doCodegen env array
+        /// Load length from offset 0
+        let lengthCode =
+            Asm(RV.LW(Reg.r(env.Target), Imm12(0), Reg.r(env.Target)),
+                "Load array length from offset 0")
+        
+        arrayCode ++ lengthCode
 
     | Copy(target) -> 
         let targetCode = doCodegen env target
