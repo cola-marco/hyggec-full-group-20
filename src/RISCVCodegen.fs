@@ -907,17 +907,6 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
         selTargetCode ++ fieldAccessCode
 
     | UnionCons(label, expr) ->
-        // Compile the payload expression first
-        let exprCode =
-            doCodegen { env with Target = env.Target + 1u } expr
-
-        // Extract the tag from the type of this UnionCons node
-        let tag =
-            match node.Type with
-            | TUnion([{ Label = l; Tag = t; CaseType = _ }]) when l = label -> t
-            | _ ->
-                failwith $"BUG: expected single-case union type for UnionCons %s{label}"
-
         // Allocate 2 words on the heap:
         //   word 0 = integer tag
         //   word 1 = payload value
@@ -934,6 +923,13 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
                 ])
                 ++ (afterSysCall [Reg.a0] [])
 
+        // Extract the tag from the type of this UnionCons node
+        let tag =
+            match node.Type with
+            | TUnion([{ Label = l; Tag = t; CaseType = _ }]) when l = label -> t
+            | _ ->
+                failwith $"BUG: expected single-case union type for UnionCons %s{label}"
+
         // Store the integer tag in word 0
         let storeTagCode =
             Asm(
@@ -942,13 +938,13 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
             )
             ++
             Asm(
-                RV.SW(
-                    Reg.r(env.Target + 2u),
-                    Imm12(0),
-                    Reg.r(env.Target)
-                ),
+                RV.SW(Reg.r(env.Target + 2u), Imm12(0), Reg.r(env.Target)),
                 "Store union tag at offset 0"
             )
+
+        // Compile the payload expression
+        let exprCode =
+            doCodegen { env with Target = env.Target + 1u } expr
 
         // Store the payload in word 1 (offset 4)
         let storePayloadCode =
@@ -958,21 +954,13 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
 
             | t when (isSubtypeOf expr.Env t TFloat) ->
                 Asm(
-                    RV.FSW_S(
-                        FPReg.r(env.FPTarget),
-                        Imm12(4),
-                        Reg.r(env.Target)
-                    ),
+                    RV.FSW_S(FPReg.r(env.FPTarget), Imm12(4), Reg.r(env.Target)),
                     "Store union payload (float) at offset 4"
                 )
 
             | _ ->
                 Asm(
-                    RV.SW(
-                        Reg.r(env.Target + 1u),
-                        Imm12(4),
-                        Reg.r(env.Target)
-                    ),
+                    RV.SW(Reg.r(env.Target + 1u), Imm12(4), Reg.r(env.Target)),
                     "Store union payload at offset 4"
                 )
 
