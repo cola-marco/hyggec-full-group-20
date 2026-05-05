@@ -1178,9 +1178,10 @@ and internal formatAssertionExpr (node: TypedAST): string =
     | Ascription(_, expr) -> formatAssertionExpr expr
     | Assertion(arg) -> $"assert(%s{formatAssertionExpr arg})"
     | Let(name, init, scope)
-    | LetT(name, _, init, scope)
-    | LetMut(name, init, scope) ->
+    | LetT(name, _, init, scope) ->
         $"let %s{name} = %s{formatAssertionExpr init}; %s{formatAssertionExpr scope}"
+    | LetMut(name, init, scope) ->
+        $"let mutable %s{name} = %s{formatAssertionExpr init}; %s{formatAssertionExpr scope}"
     | Assign(lhs, rhs) -> $"%s{formatAssertionExpr lhs} <- %s{formatAssertionExpr rhs}"
     | While(cond, body) -> $"while %s{formatAssertionExpr cond} do %s{formatAssertionExpr body}"
     | DoWhile(body, cond) -> $"do %s{formatAssertionExpr body} while %s{formatAssertionExpr cond}"
