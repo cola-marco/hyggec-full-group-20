@@ -76,6 +76,48 @@ type internal RuntimeEnv<'E,'T> = {
           + $"%s{Util.nl}  - PtrInfo: %s{ptrInfoStr}"
 
 
+let rec internal isCV (varName, (scope: Node<'a,'b>)) =
+    match scope.Expr with
+    | Lambda(args, body) ->
+        if List.exists (fun (name, _) -> name = varName) args then false
+        else isCV(varName, body)
+    | UnitVal | BoolVal(_) | IntVal(_) | FloatVal(_) | StringVal(_) | Pointer(_) | Var(_) -> false
+    | Let(name, init, scope) | LetT(name, _, init, scope) | LetMut(name, init, scope) ->
+        let cvInit = isCV(varName, init)
+        let cvScope = if name = varName then false else isCV(varName, scope)
+        cvInit || cvScope
+    | BinNumOp(_, lhs, rhs) | BinLogicOp(_, lhs, rhs) | BinRelOp(_, lhs, rhs) ->
+        isCV(varName, lhs) || isCV(varName, rhs)
+    | Sqrt(arg) | Not(arg) | Print(arg) | PrintLn(arg) | Assertion(arg)
+    | Ascription(_, arg) | UnionCons(_, arg) | ArrayLength(arg) | Copy(arg) | DeepCopy(arg) ->
+        isCV(varName, arg)
+    | If(cond, ifTrue, ifFalse) ->
+        isCV(varName, cond) || isCV(varName, ifTrue) || isCV(varName, ifFalse)
+    | Seq(nodes) ->
+        List.exists (fun n -> isCV(varName, n)) nodes
+    | Type(_, _, scope) ->
+        isCV(varName, scope)
+    | While(cond, body) | DoWhile(body, cond) | ArrayCons(cond, body) ->
+        isCV(varName, cond) || isCV(varName, body)
+    | For(name, init, cond, step, body) ->
+        isCV(varName, init) ||
+        if name = varName then false
+        else isCV(varName, cond) || isCV(varName, step) || isCV(varName, body)
+    | Application(expr, args) ->
+        isCV(varName, expr) || List.exists (fun a -> isCV(varName, a)) args
+    | StructCons(fields) ->
+        List.exists (fun (_, n) -> isCV(varName, n)) fields
+    | FieldSelect(target, _) ->
+        isCV(varName, target)
+    | Assign(target, expr) ->
+        isCV(varName, target) || isCV(varName, expr)
+    | Match(expr, cases) ->
+        isCV(varName, expr) || List.exists (fun (_, v, cont) ->
+            if v = varName then false else isCV(varName, cont)) cases
+    | ArrayElem(name, index) ->
+        isCV(varName, name) || isCV(varName, index)
+    | ReadInt | ReadFloat -> false
+
 
 /// Attempt to reduce the given AST node by one step, using the given runtime
 /// environment.  If a reduction is possible, return the reduced node and an
