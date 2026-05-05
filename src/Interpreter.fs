@@ -451,25 +451,31 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
         | Some(env', init') ->
             Some(env', {node with Expr = LetMut(name, init', scope)})
         | None when (isValue init) ->
-            /// Runtime environment for reducing the 'let mutable...' scope
-            let env' = {env with Mutables = env.Mutables.Add(name, init)}
-            match (reduce env' scope) with
-            | Some(env'', scope') ->
-                /// Updated init value for the mutable variable
-                let init' = env''.Mutables[name] // Crash if 'name' not found
-                /// Updated runtime environment.  If the declared mutable
-                /// variable 'name' was defined in the outer scope, we restore
-                /// its old value (consequently, any update to the redefined
-                /// variable 'name' is only visible in its scope).  Otherwise,
-                /// we remove it from the updated runtime environment (so it
-                /// is only visible in its scope)
-                let env''' =
-                    match (env.Mutables.TryFind(name)) with
-                    | Some(v) -> {env'' with
-                                    Mutables = env''.Mutables.Add(name, v)}
-                    | None -> {env'' with
-                                Mutables = env''.Mutables.Remove(name)}
-                Some(env''', {node with Expr = LetMut(name, init', scope')})
+            if isCV (name, scope)
+            then
+                let structNode = {node with Expr = StructCons([("value", init)])}
+                let scopeSubst = ASTUtil.subst scope name {node with Expr = FieldSelect({node with Expr = Var(name)}, "value")}
+                Some(env, {node with Expr = Let(name, structNode, scopeSubst)})
+            else
+                /// Runtime environment for reducing the 'let mutable...' scope
+                let env' = {env with Mutables = env.Mutables.Add(name, init)}
+                match (reduce env' scope) with
+                | Some(env'', scope') ->
+                    /// Updated init value for the mutable variable
+                    let init' = env''.Mutables[name] // Crash if 'name' not found
+                    /// Updated runtime environment.  If the declared mutable
+                    /// variable 'name' was defined in the outer scope, we restore
+                    /// its old value (consequently, any update to the redefined
+                    /// variable 'name' is only visible in its scope).  Otherwise,
+                    /// we remove it from the updated runtime environment (so it
+                    /// is only visible in its scope)
+                    let env''' =
+                        match (env.Mutables.TryFind(name)) with
+                        | Some(v) -> {env'' with
+                                        Mutables = env''.Mutables.Add(name, v)}
+                        | None -> {env'' with
+                                    Mutables = env''.Mutables.Remove(name)}
+                    Some(env''', {node with Expr = LetMut(name, init', scope')})
             | None -> None
         | None -> None
     
