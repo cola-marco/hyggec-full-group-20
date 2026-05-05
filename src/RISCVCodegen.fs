@@ -1198,6 +1198,18 @@ and internal formatAssertionExpr (node: TypedAST): string =
         |> String.concat "; "
         |> sprintf "struct {%s}"
     | FieldSelect(target, field) -> $"%s{formatAssertionExpr target}.%s{field}"
+    | Sqrt(arg) ->
+        $"sqrt(%s{formatAssertionExpr arg})"
+    | ArrayCons(size, init) ->
+        $"array(%s{formatAssertionExpr size}, %s{formatAssertionExpr init})"
+    | ArrayElem(array, index) ->
+        $"%s{formatAssertionExpr array}[%s{formatAssertionExpr index}]"
+    | ArrayLength(array) ->
+        $"%s{formatAssertionExpr array}.length"
+    | Copy(target) ->
+        $"copy(%s{formatAssertionExpr target})"
+    | DeepCopy(target) ->
+        $"deepcopy(%s{formatAssertionExpr target})"
     | Pointer(addr) -> $"<pointer 0x%x{addr}>"
     | UnionCons(label, expr) -> $"%s{label}(%s{formatAssertionExpr expr})"
     | Match(expr, _) -> $"match %s{formatAssertionExpr expr} with ..."
@@ -1266,6 +1278,7 @@ and internal printValueReg (env: TypingEnv) (reg: Reg) (tpe: Type) (depth: int):
     | TUnion(_) -> printStringLiteral "<union>"
     | TVar(name) -> printStringLiteral $"<value of unresolved type %s{name}>"
     | TFloat -> failwith "BUG: float values must be printed through printFloatReg"
+    | TArray(_) -> printStringLiteral "<array>"
 
 /// Generate code that prints a floating-point value held in the given register.
 and internal printFloatReg (fpreg: FPReg): Asm =
