@@ -127,6 +127,15 @@ let rec internal resolvePretype (env: TypingEnv) (pt: AST.PretypeNode): Result<T
                 /// Type of each union case
                 let caseTypes = List.map getOkValue caseTypes
                 Ok(TUnion(List.zip caseLabels caseTypes))
+    | Pretype.TArray(tpe) ->
+        let elemType = resolvePretype env tpe
+        /// Errors occurred while resolving 'argPretypes' or 'retPretypes'
+        let errors = collectErrors [elemType]
+        if not errors.IsEmpty then Error(errors)
+        else
+            let elemType = getOkValue elemType
+            Ok(TArray(elemType))
+
 
 /// Resolve a type variable using the given typing environment: optionally
 /// return the Type corresponding to variable 'name', or None if 'name' is not
@@ -465,7 +474,8 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
                 else
                     Error([(node.Pos,
                             $"assignment to non-mutable variable %s{name}")])
-            | FieldSelect(_, _) ->
+            | FieldSelect(_, _)
+            | ArrayElem(_, _) ->
                 Ok { Pos = node.Pos; Env = env; Type = ttarget.Type;
                      Expr = Assign(ttarget, texpr) }
             | _ -> Error([(node.Pos, "invalid assignment target")])
@@ -639,6 +649,34 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
     | Pointer(_) ->
         Error([(node.Pos, "pointers cannot be type-checked (by design!)")])
 
+    | Copy(arg) -> 
+        match (typer env arg) with
+        | Ok(targ) ->
+            match (expandType env targ.Type) with
+            | TStruct(_) -> 
+                Ok { Pos = node.Pos; 
+                     Env = env; 
+                     Type = targ.Type; 
+                     Expr = Copy(targ) }
+            | _ -> 
+                Error([(node.Pos, $"copy: expected argument of struct type, found %O{targ.Type}")])
+        | Error(es) -> 
+            Error(es)
+
+    | DeepCopy(arg) ->
+        match (typer env arg) with
+        | Ok(targ) ->
+            match (expandType env targ.Type) with
+            | TStruct(_) ->
+                Ok { Pos = node.Pos;
+                     Env = env;
+                     Type = targ.Type;
+                     Expr = DeepCopy(targ) }
+            | _ ->
+                Error([(node.Pos, $"deepcopy: expected argument of struct type, found %O{targ.Type}")])
+        | Error(es) ->
+            Error(es)
+            
     | UnionCons(label, expr) ->
         match (typer env expr) with
         | Ok(texpr) ->
@@ -706,6 +744,49 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
                 | _ ->
                     Error([(expr.Pos, $"cannot match on expression of type %O{texpr.Type}")])
             | Error(es) -> Error(es)
+    | ArrayCons(size, init) ->
+        let sizeTyping = typer env size
+        let initTyping = typer env init
+        let errs = collectErrors [sizeTyping; initTyping]
+        if not errs.IsEmpty then Error(errs)
+        else
+            let sizeTyped = getOkValue sizeTyping
+            let initTyped = getOkValue initTyping
+            if not (isSubtypeOf env sizeTyped.Type TInt) then
+                Error([(size.Pos, $"array size must be integer, found %O{sizeTyped.Type}")])
+            else
+                Ok { Pos = node.Pos; Env = env; Type = TArray(initTyped.Type);
+                     Expr = ArrayCons(sizeTyped, initTyped) }
+    | ArrayLength(array) ->
+        match (typer env array) with
+        | Ok(tarray) ->
+            match tarray.Expr with
+            | Var(_) ->
+                match (expandType env tarray.Type) with
+                | TArray(_) ->
+                    Ok { Pos = node.Pos; Env = env; Type = TInt; Expr = ArrayLength(tarray) }
+                | _ -> Error([(array.Pos, $"expected array type, found %O{tarray.Type}")])
+            | _ -> Error([(array.Pos, "arrayLength expects an array variable")])
+        | Error(es) -> Error(es)
+    | ArrayElem(array, index) ->
+        let arrayTyping = typer env array
+        let indexTyping = typer env index
+        let errs = collectErrors [arrayTyping; indexTyping]
+        if not errs.IsEmpty then Error(errs)
+        else
+            let tarray = getOkValue arrayTyping
+            let tindex = getOkValue indexTyping
+            match tarray.Expr with
+            | Var(_) ->
+                match (expandType env tarray.Type) with
+                | TArray(elemType) ->
+                    if not (isSubtypeOf env tindex.Type TInt) then
+                        Error([(index.Pos, $"array index must be integer, found %O{tindex.Type}")])
+                    else
+                        Ok { Pos = node.Pos; Env = env; Type = elemType; Expr = ArrayElem(tarray, tindex) }
+                | _ -> Error([(array.Pos, $"expected array type, found %O{tarray.Type}")])
+            | _ -> Error([(array.Pos, "arrayElem expects an array variable")])
+
 
 /// Compute the typing of a binary numerical operation, by computing and
 /// combining the typings of the 'lhs' and 'rhs'.  The argument 'descr' (used in

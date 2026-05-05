@@ -94,6 +94,10 @@ type Token =
     | FUN
     /// Keyword 'struct'.
     | STRUCT
+    /// Keyword 'copy'.
+    | COPY
+    /// Keyword 'deepcopy'.
+    | DEEPCOPY
     /// Keyword 'union'.
     | UNION
     /// Keyword 'match'.
@@ -116,6 +120,16 @@ type Token =
     | IDENT of value: string
     /// End of file.
     | EOF
+    /// keyword `array`
+    | ARRAY
+    /// Keyword `arrayElem`
+    | ARRAYELEM
+    /// Keyword `arrayLength`
+    | ARRAYLENGTH
+    /// Keyword `in`
+    | IN
+    /// Keyword `slice`
+    | SLICE
 
 
 /// Position in a file.
@@ -227,11 +241,19 @@ and internal mkKeywordOrIdent (s: string) =
     | "for" -> FOR
     | "fun" -> FUN
     | "struct" -> STRUCT
+    | "copy" -> COPY
+    | "deepcopy" -> DEEPCOPY
+    | "dot" -> DOT
     | "union" -> UNION
     | "match" -> MATCH
     | "with" -> WITH
     | "true" -> LIT_BOOL true
     | "false" -> LIT_BOOL false
+    | "array" -> ARRAY
+    | "arrayElem" -> ARRAYELEM
+    | "arrayLength" -> ARRAYLENGTH
+    | "in" -> IN
+    | "slice" -> SLICE
     | other -> IDENT other
 
 /// Convert a string into a FloatLit token, after stripping the final 'f'.

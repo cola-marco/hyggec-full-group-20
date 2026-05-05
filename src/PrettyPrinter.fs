@@ -70,6 +70,11 @@ let rec internal formatType (t: Type.Type): Tree =
         let casesChildren =
             List.map (fun (f, t) -> ($"label %s{f}", formatType t)) cases
         Node("union", casesChildren)
+    | Type.TArray(init) ->
+        Node("array", [
+            ("size", formatType Type.TInt)
+            ("init", formatType init)
+        ])
 
 
 
@@ -185,8 +190,24 @@ let rec internal formatASTRec (node: AST.Node<'E,'T>): Tree =
         mkTree $"FieldSelect %s{field}" node [("expr", formatASTRec target)]
     | Pointer(addr) ->
         mkTree $"Pointer 0x%x{addr}" node []
+    | Copy(arg) ->
+        mkTree "Copy" node [("arg", formatASTRec arg)]
+    | DeepCopy(arg) ->
+        mkTree "DeepCopy" node [("arg", formatASTRec arg)]
     | UnionCons(label, expr) ->
         mkTree $"UnionCons %s{label}" node [("expr", formatASTRec expr)]
+    | ArrayCons(size, init) ->
+        mkTree "ArrayCons" node [
+            ("size", formatASTRec size)
+            ("init", formatASTRec init)
+        ]
+    | ArrayElem(name, index) ->
+        mkTree "ArrayElem" node [
+            ("name", formatASTRec name)
+            ("index", formatASTRec index)
+        ]
+    | ArrayLength(arr) ->
+        mkTree "ArrayLength" node ["name", formatASTRec arr]
     | Match(expr, cases) ->
         let casesChildren =
             List.map (fun (l, v, cont) -> ($"case %s{l}{{%s{v}}}",
@@ -244,6 +265,8 @@ and internal formatPretypeNode (node: PretypeNode): Tree =
             List.map (fun (name, t) -> ((formatPretypeDescr t $"label %s{name}"),
                                         formatPretypeNode t)) cases
         Node((formatPretypeDescr node "Union pretype"), casesChildren)
+    | Pretype.TArray(tpe) ->
+        Node((formatPretypeDescr node "Array pretype"), [("Element type", formatPretypeNode tpe)])
 
 /// Format the description of a pretype AST node (without printing its
 /// children).

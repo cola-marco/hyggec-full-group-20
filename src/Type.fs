@@ -30,6 +30,7 @@ type Type =
     | TStruct of fields: List<string * Type>
     /// Discriminated union type.  Each case consists of a label and a type.
     | TUnion of cases: List<string * Type>
+    | TArray of init: Type
 
     /// Returns a human-readable string describing the type.
     override this.ToString(): string =
@@ -52,6 +53,8 @@ type Type =
             let fmtCase (f: string, t: Type) = $"%s{f}: %O{t}"
             let casesStr = Seq.map fmtCase cases
             "union {" + System.String.Join("; ", casesStr) + "}"
+        | TArray(init) ->
+            "array { " + init.ToString() + " }"
 
 
 /// List of basic types known by the compiler.  NOTE: this list must be kept in
@@ -76,6 +79,8 @@ let rec freeTypeVars (t: Type): Set<string> =
     | TUnion(cases) ->
         let (_, caseTypes) = List.unzip cases
         collectFreeTypeVars caseTypes
+    | TArray(init) ->
+        freeTypeVars init
 
 /// Collect all free type variables in the given list of types.
 and collectFreeTypeVars (ts: List<Type>): Set<string> =
