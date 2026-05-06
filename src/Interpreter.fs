@@ -81,7 +81,8 @@ let rec internal isCV (varName, (scope: Node<'a,'b>)) =
     | Lambda(args, body) ->
         if List.exists (fun (name, _) -> name = varName) args then false
         else isCV(varName, body)
-    | UnitVal | BoolVal(_) | IntVal(_) | FloatVal(_) | StringVal(_) | Pointer(_) | Var(_) -> false
+    | Var(name) -> name = varName
+    | UnitVal | BoolVal(_) | IntVal(_) | FloatVal(_) | StringVal(_) | Pointer(_) -> false
     | Let(name, init, scope) | LetT(name, _, init, scope) | LetMut(name, init, scope) ->
         let cvInit = isCV(varName, init)
         let cvScope = if name = varName then false else isCV(varName, scope)
@@ -444,8 +445,14 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
             Some(env, {node with Expr = (ASTUtil.subst scope name init).Expr})
         | None -> None
 
-    | LetMut(_, _, scope) when (isValue scope) ->
-        Some(env, {node with Expr = scope.Expr})
+    | LetMut(name, init, scope) when (isValue scope) ->
+        if isCV (name, scope)
+        then
+            let structNode = {node with Expr = StructCons([("value", init)])}
+            let scopeSubst = ASTUtil.subst scope name {node with Expr = FieldSelect({node with Expr = Var(name)}, "value")}
+            Some(env, {node with Expr = Let(name, structNode, scopeSubst)})
+        else
+            Some(env, {node with Expr = scope.Expr})
     | LetMut(name, init, scope) ->
         match (reduce env init) with
         | Some(env', init') ->
@@ -476,7 +483,7 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                         | None -> {env'' with
                                     Mutables = env''.Mutables.Remove(name)}
                     Some(env''', {node with Expr = LetMut(name, init', scope')})
-            | None -> None
+                | None -> None
         | None -> None
     
     | Assign({Expr = Application(appExpr, appArgs)} as target, expr) when appExpr.Expr = Var "arrayElem" && appArgs.Length = 2 ->
