@@ -543,7 +543,7 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
                 then Ok { Pos = node.Pos; Env = env; Type = TFloat; Expr = IncDec(op, name)}
             else Error([(node.Pos, $"IncDec {op}: expected type %O{TInt} or %O{TFloat}, "
                             + $"found %O{env.Vars.[name]}")])
-        else Error([(node.Pos, $"IncDec {op} to non-mutable variable %s{name}")])
+        else Error([(node.Pos, $"IncDec {op} to non-mutable or non-existent variable %s{name}")])
 
 
     | Lambda(args, body) ->
