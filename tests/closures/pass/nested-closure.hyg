@@ -1,4 +1,4 @@
 let x: int = 10;
 let makeAdder = fun (y: int) -> fun (z: int) -> x + y + z;
 let addFive = makeAdder(5);
-println(addFive(3))
+assert(addFive(3) = 18)
