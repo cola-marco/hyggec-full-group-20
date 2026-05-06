@@ -426,19 +426,20 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
         match (typer env cond) with
         | Ok(tcond) when (isSubtypeOf env tcond.Type TBool) ->
             match ((typer env ifT), (typer env ifF)) with
-            | (Ok(tifT), Ok(tifF)) when (isSubtypeOf env tifT.Type tifF.Type) ->
-                Ok { Pos = node.Pos; Env = env; Type = tifF.Type
-                     Expr = If(tcond, tifT, tifF) }
-            | (Ok(tifT), Ok(tifF)) when (isSubtypeOf env tifF.Type tifT.Type) ->
-                Ok { Pos = node.Pos; Env = env; Type = tifT.Type
-                     Expr = If(tcond, tifT, tifF) }
             | (Ok(tifT), Ok(tifF)) ->
-                Error([(node.Pos, $"mismatching 'then' and 'else' types: "
-                               + $"%O{tifT.Type} and %O{tifF.Type}")])
-            | otherwise -> mergeErrors otherwise
+                match (lub env tifT.Type tifF.Type) with
+                | Some(lubType) ->
+                    Ok { Pos = node.Pos; Env = env; Type = lubType;
+                        Expr = If(tcond, tifT, tifF) }
+                | None ->
+                    let errMsg =
+                        $"mismatching 'then' and 'else' types: could not compute a least upper bound for %O{tifT.Type} and %O{tifF.Type}"
+                    Error([(node.Pos, errMsg)])
+            | (Ok(_), Error(es)) -> Error(es)
+            | (Error(es), Ok(_)) -> Error(es)
+            | (Error(es1), Error(es2)) -> Error(es1 @ es2)
         | Ok(tcond) ->
-            Error([(cond.Pos, $"'if' condition: expected type %O{TBool}, "
-                              + $"found %O{tcond.Type}")])
+            Error([(cond.Pos, $"'if' condition: expected type %O{TBool}, found %O{tcond.Type}")])
         | Error(es) -> Error(es)
 
     | Seq(nodes) ->
