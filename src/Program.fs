@@ -132,44 +132,48 @@ let internal generateAsm (filename: string)
         | Ok(tast) ->
             Log.info (lazy "Type checking succeeded.")
 
-            // Run closure conversion after the original program has been type checked.
-            // The pass produces a new untyped AST, because it generates new expressions
-            // and type annotations. We then type check the converted AST again before
-            // sending it to the RISC-V code generator.
-            let closedAst = ClosureConversion.closureConvert tast
+            try
+                // Run closure conversion after the original program has been type checked.
+                // The pass produces a new untyped AST, because it generates new expressions
+                // and type annotations. We then type check the converted AST again before
+                // sending it to the RISC-V code generator.
+                let closedAst = ClosureConversion.closureConvert tast
 
-            match Typechecker.typecheck closedAst with
-            | Error(typErrs) ->
-                for posErr in typErrs do
-                    Log.error (lazy (Util.formatMsg posErr))
+                match Typechecker.typecheck closedAst with
+                | Error(typErrs) ->
+                    for posErr in typErrs do
+                        Log.error (lazy (Util.formatMsg posErr))
+                    Error()
+
+                | Ok(closedTypedAst) ->
+                    Log.info (lazy "Closure conversion and second type checking succeeded.")
+
+                    let asm =
+                        if (anf) then
+                            Log.debug (lazy $"Transforming closure-converted AST into ANF")
+                            let anf = ANF.transform closedTypedAst
+                            let registers =
+                                if (maxRegisters >= 3u) && (maxRegisters <= 18u) then
+                                    maxRegisters
+                                else if maxRegisters = 0u then
+                                    18u // Default
+                                else
+                                    failwith $"The number of registers must be between 3 and 18 (got %d{maxRegisters} instead)"
+                            ANFRISCVCodegen.codegen anf registers
+                        else
+                            RISCVCodegen.codegen closedTypedAst
+
+                    /// Assembly code after optimization (if enabled)
+                    let asm2 =
+                        if (optimize >= 1u) then
+                            Peephole.optimize asm
+                        else
+                            asm
+
+                    Ok(asm2)
+            with e ->
+                Log.error (lazy e.Message)
                 Error()
-
-            | Ok(closedTypedAst) ->
-                Log.info (lazy "Closure conversion and second type checking succeeded.")
-
-                let asm =
-                    if (anf) then
-                        Log.debug (lazy $"Transforming closure-converted AST into ANF")
-                        let anf = ANF.transform closedTypedAst
-                        let registers =
-                            if (maxRegisters >= 3u) && (maxRegisters <= 18u) then
-                                maxRegisters
-                            else if maxRegisters = 0u then
-                                18u // Default
-                            else
-                                failwith $"The number of registers must be between 3 and 18 (got %d{maxRegisters} instead)"
-                        ANFRISCVCodegen.codegen anf registers
-                    else
-                        RISCVCodegen.codegen closedTypedAst
-
-                /// Assembly code after optimization (if enabled)
-                let asm2 =
-                    if (optimize >= 1u) then
-                        Peephole.optimize asm
-                    else
-                        asm
-
-                Ok(asm2)
 
 /// Run the Hygge compiler with the given options, and return the exit code
 /// (zero in case of success, non-zero in case of error).

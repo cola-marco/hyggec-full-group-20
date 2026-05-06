@@ -1,4 +1,4 @@
 let clos: int = 10;
 let f: int = 20;
 let g = fun (x: int) -> clos + f + x;
-println(g(1))
+assert(g(1) = 31)
