@@ -27,6 +27,8 @@ type internal Storage =
     /// The variable is stored in memory, in a location marked with a
     /// label in the compiled assembly code.
     | Label of label: string
+    /// Variable stored on stack at offset from fp
+    | Frame of offset: int
 
 
 /// Code generation environment.
@@ -82,6 +84,9 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
             | Some(Storage.FPReg(fpreg)) ->
                 Asm(RV.FMV_S(FPReg.r(env.FPTarget), fpreg),
                     $"Load variable '%s{name}'")
+            | Some(Storage.Frame(offset)) ->
+                Asm(RV.FLW_S(FPReg.r(env.FPTarget), Imm12(offset), Reg.fp),
+                    $"Load float variable '%s{name}' from stack frame")
             | Some(Storage.Label(lab)) ->
                 Asm([ (RV.LA(Reg.r(env.Target), lab),
                        $"Load address of variable '%s{name}'")
@@ -96,6 +101,9 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
             match (env.VarStorage.TryFind name) with
             | Some(Storage.Reg(reg)) ->
                 Asm(RV.MV(Reg.r(env.Target), reg), $"Load variable '%s{name}'")
+            | Some(Storage.Frame(offset)) ->
+                Asm(RV.LW(Reg.r(env.Target), Imm12(offset), Reg.fp),
+                    $"Load variable '%s{name}' from stack frame")
             | Some(Storage.Label(lab)) ->
                 match (expandType node.Env node.Type) with
                     | TFun(_,_) ->
@@ -796,45 +804,157 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
             Asm().AddText(RV.COMMENT("Load expression to be applied as a function"))
             ++ (doCodegen env expr)
 
-        /// Indexed list of argument expressions.  We will use the as an offset
-        /// (above the current target register) to determine the target register
-        /// for compiling each expression.
-        let indexedArgs = List.indexed args
-        /// Function that compiles an argument (using its index to determine its
-        /// target register) and accumulates the generated assembly code
-        let compileArg (acc: Asm) (i, arg) =
-            acc ++ (doCodegen {env with Target = env.Target + (uint i) + 1u} arg)
-        /// Assembly code of all application arguments, obtained by folding over
-        /// 'indexedArgs'
-        let argsCode = List.fold compileArg (Asm()) indexedArgs
+        /// Indexed list of argument expressions.
+        let indexedArgs: List<int * TypedAST> = List.indexed args
 
-        /// Function that copies the content of a target register (used by
-        /// 'compileArgs' and 'argsCode' above) into an 'a' register, using an
-        /// index to determine the source and target registers, and accumulating
-        /// the generated assembly code
-        let copyArg (acc: Asm) (i: int) =
-            acc.AddText(RV.MV(Reg.a(uint i), Reg.r(env.Target + (uint i) + 1u)),
-                        $"Load function call argument %d{i+1}")
+        /// Count how many arguments must be passed on the stack before the call.
+        /// Integer and floating-point arguments use separate register counters:
+        /// a0-a7 for integers and fa0-fa7 for floats. Only arguments beyond
+        /// those limits need stack slots.
+        let countStackArgs ((intArgCount, floatArgCount, stackArgCount): int * int * int) (arg: TypedAST) =
+            match arg.Type with
+            | t when isSubtypeOf arg.Env t TFloat ->
+                if floatArgCount < 8 then
+                    (intArgCount, floatArgCount + 1, stackArgCount)
+                else
+                    (intArgCount, floatArgCount + 1, stackArgCount + 1)
 
-        /// Code that loads each application argument into a register 'a', by
-        /// copying the contents of the target registers used by 'compileArgs'
-        /// and 'argsCode' above.  To this end, this code folds over the indexes
-        /// of all arguments (from 0 to args.Length), using 'copyArg' above.
-        let argsLoadCode = List.fold copyArg (Asm()) [0..(args.Length-1)]
+            | _ ->
+                if intArgCount < 8 then
+                    (intArgCount + 1, floatArgCount, stackArgCount)
+                else
+                    (intArgCount + 1, floatArgCount, stackArgCount + 1)
 
-        /// Code that performs the function call
+        let (_, _, stackArgCount) =
+            List.fold countStackArgs (0, 0, 0) args
+
+        /// Each Hygge value occupies one word, so each stack argument uses 4 bytes.
+        let stackArgBytes = stackArgCount * 4
+
+       /// Compile each argument into reusable temporary registers r(target+1)
+        /// or fr(fptarget+1), then immediately move it to the correct argument
+        /// register or store it in its stack slot. This avoids needing one
+        /// temporary register per argument.
+        let compileAndLoadArg
+            ((asm, intArgCount, floatArgCount, stackArgCount): Asm * int * int * int)
+            ((i, arg): int * TypedAST) =
+
+            match arg.Type with
+            | t when isSubtypeOf arg.Env t TFloat ->
+                let argCode =
+                    doCodegen { env with
+                                    Target = env.Target + 1u
+                                    FPTarget = env.FPTarget + 1u } arg
+
+                if floatArgCount < 8 then
+                    let moveCode =
+                        Asm(
+                            RV.FMV_S(
+                                FPReg.fa(uint floatArgCount),
+                                FPReg.r(env.FPTarget + 1u)
+                            ),
+                            $"Load float function call argument %d{i + 1}"
+                        )
+
+                    (asm ++ argCode ++ moveCode,
+                    intArgCount,
+                    floatArgCount + 1,
+                    stackArgCount)
+                else
+                    let offset = stackArgCount * 4
+
+                    let storeCode =
+                        Asm(
+                            RV.FSW_S(
+                                FPReg.r(env.FPTarget + 1u),
+                                Imm12(offset),
+                                Reg.sp
+                            ),
+                            $"Store float function call stack argument %d{i + 1}"
+                        )
+
+                    (asm ++ argCode ++ storeCode,
+                    intArgCount,
+                    floatArgCount + 1,
+                    stackArgCount + 1)
+
+            | _ ->
+                let argCode =
+                    doCodegen { env with
+                                    Target = env.Target + 1u } arg
+
+                if intArgCount < 8 then
+                    let moveCode =
+                        Asm(
+                            RV.MV(
+                                Reg.a(uint intArgCount),
+                                Reg.r(env.Target + 1u)
+                            ),
+                            $"Load integer function call argument %d{i + 1}"
+                        )
+
+                    (asm ++ argCode ++ moveCode,
+                    intArgCount + 1,
+                    floatArgCount,
+                    stackArgCount)
+                else
+                    let offset = stackArgCount * 4
+
+                    let storeCode =
+                        Asm(
+                            RV.SW(
+                                Reg.r(env.Target + 1u),
+                                Imm12(offset),
+                                Reg.sp
+                            ),
+                            $"Store integer function call stack argument %d{i + 1}"
+                        )
+
+                    (asm ++ argCode ++ storeCode,
+                    intArgCount + 1,
+                    floatArgCount,
+                    stackArgCount + 1)
+
+        let (argsCode, _, _, _) =
+            List.fold compileAndLoadArg (Asm(), 0, 0, 0) indexedArgs
+
+        let allocateStackArgs =
+            if stackArgBytes = 0 then
+                Asm()
+            else
+                Asm(RV.ADDI(Reg.sp, Reg.sp, Imm12(-stackArgBytes)),
+                    "Allocate stack space for function call arguments")
+
+        let freeStackArgs =
+            if stackArgBytes = 0 then
+                Asm()
+            else
+                Asm(RV.ADDI(Reg.sp, Reg.sp, Imm12(stackArgBytes)),
+                    "Free stack space for function call arguments")
+
+        /// The stack space for overflow arguments must be allocated before
+        /// argsCode runs, because argsCode stores stack-passed arguments at
+        /// offsets from sp.
         let callCode =
             appTermCode
-            ++ argsCode // Code to compute each argument of the function call
                .AddText(RV.COMMENT("Before function call: save caller-saved registers"))
                ++ (saveRegisters saveRegs [])
-               ++ argsLoadCode // Code to load arg values into arg registers
-                  .AddText(RV.JALR(Reg.ra, Imm12(0), Reg.r(env.Target)), "Function call")
+               ++ allocateStackArgs
+               ++ argsCode // Code to load arg values into arg registers
+               .AddText(RV.JALR(Reg.ra, Imm12(0), Reg.r(env.Target)), "Function call")
+               ++ freeStackArgs
 
         /// Code that handles the function return value (if any)
         let retCode =
-            Asm(RV.MV(Reg.r(env.Target), Reg.a0),
-                $"Copy function return value to target register")
+            match node.Type with
+            | t when isSubtypeOf node.Env t TFloat ->
+                Asm(RV.FMV_S(FPReg.r(env.FPTarget), FPReg.fa0),
+                    "Copy float function return value to target register")
+            | t when isSubtypeOf node.Env t TUnit ->
+                Asm()
+            | _ ->
+                Asm(RV.MV(Reg.r(env.Target), Reg.a0),
+                    "Copy function return value to target register")
 
         // Put everything together, and restore the caller-saved registers
         callCode
@@ -1187,13 +1307,34 @@ and internal compileFunction (args: List<string * Type>)
     /// List of indexed arguments: we use the index as the number of the 'a'
     /// register that holds the argument
     let indexedArgs = List.indexed args
-    /// Folder function that assigns storage information to function arguments:
-    /// it assigns an 'a' register to each function argument, and accumulates
-    /// the result in a mapping (that will be used as env.VarStorage)
-    let folder (acc: Map<string, Storage>) (i, (var, _tpe)) =
-        acc.Add(var, Storage.Reg(Reg.a((uint)i)))
-    /// Updated storage information including function arguments
-    let varStorage2 = List.fold folder env.VarStorage indexedArgs
+    /// Folder function that assigns storage information to function arguments.
+    /// The first 8 integer-like arguments are stored in RISC-V argument
+    /// registers a0-a7. Any further integer-like arguments are stored on the
+    /// caller's stack frame and accessed through offsets from fp.
+    let folder ((acc, intArgCount, floatArgCount, stackArgCount): Map<string, Storage> * int * int * int)
+           (var, tpe) =
+
+        if isSubtypeOf body.Env tpe TFloat then
+            if floatArgCount  < 8 then
+                let storage = Storage.FPReg(FPReg.fa(uint floatArgCount))
+                (acc.Add(var, storage), intArgCount, floatArgCount + 1, stackArgCount)
+            else
+                let offset = stackArgCount * 4
+                let storage = Storage.Frame(offset)
+                (acc.Add(var, storage), intArgCount, floatArgCount + 1, stackArgCount + 1)
+        else
+            if intArgCount < 8 then
+                let storage = Storage.Reg(Reg.a(uint intArgCount))
+                (acc.Add(var, storage), intArgCount + 1, floatArgCount, stackArgCount)
+            else
+                let offset = stackArgCount * 4
+                let storage = Storage.Frame(offset)
+                (acc.Add(var, storage), intArgCount + 1, floatArgCount, stackArgCount + 1)
+
+    /// Updated storage information including function arguments, where arguments
+    /// above the 8th integer-like argument are mapped to stack frame locations.
+    let (varStorage2, _, _, _) =
+        List.fold folder (env.VarStorage, 0, 0, 0) args
 
     /// Code for the body of the function, using the newly-created
     /// variable storage mapping 'varStorage2'.  NOTE: the function body
@@ -1207,8 +1348,15 @@ and internal compileFunction (args: List<string * Type>)
         doCodegen env body
     /// Code to move the body result into the function return value register
     let returnCode =
-        Asm(RV.MV(Reg.a0, Reg.r(0u)),
-            "Move result of function into return value register")
+        match body.Type with
+        | t when isSubtypeOf body.Env t TFloat ->
+            Asm(RV.FMV_S(FPReg.fa0, FPReg.r(0u)),
+                "Move float result of function into return value register")
+        | t when isSubtypeOf body.Env t TUnit ->
+            Asm()
+        | _ ->
+            Asm(RV.MV(Reg.a0, Reg.r(0u)),
+                "Move result of function into return value register")
 
     /// Integer registers to save before executing the function body.
     /// Note: the definition of 'saveRegs' uses list comprehension:
