@@ -972,8 +972,7 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
         ++ storePayloadCode
 
     | Match(expr, cases) ->
-        // Compile the expression being matched.
-        // Result: target register contains pointer to union value:
+        // Compile the expression being matched
         //   offset 0 -> tag
         //   offset 4 -> payload
         let exprCode = doCodegen env expr
@@ -996,14 +995,10 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
         /// Final label after the whole pattern match
         let endLabel = Util.genSymbol "match_end"
 
-        /// Extract all union
-        let (unionCases, _, _) = List.unzip3 cases
-
         /// Generate code for one match branch
         let folder (acc: Asm) ((label, varName, cont): string * string * TypedAST) =
             /// Label to jump to if this case does NOT match
             let nextCaseLabel = Util.genSymbol $"match_next_%s{label}"
-
             let caseTag = labelDictLT[label]
 
             /// Load case tag for comparison
@@ -1016,22 +1011,14 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
             /// If tags are different, jump to next case
             let compareCode =
                 Asm(
-                    RV.BNE(
-                        Reg.r(env.Target),
-                        Reg.r(env.Target + 2u),
-                        nextCaseLabel
-                    ),
+                    RV.BNE(Reg.r(env.Target), Reg.r(env.Target + 2u), nextCaseLabel),
                     $"If tag != '%s{label}', skip this case"
                 )
 
             /// Load payload from offset 4
             let payloadLoadCode =
                 Asm(
-                    RV.LW(
-                        Reg.r(env.Target + 2u),
-                        Imm12(4),
-                        Reg.r(unionPtrReg)
-                    ),
+                    RV.LW(Reg.r(env.Target + 2u), Imm12(4), Reg.r(unionPtrReg)),
                     $"Load payload for case '%s{label}'"
                 )
 
@@ -1065,7 +1052,7 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
         let casesCode =
             List.fold folder (Asm()) cases
 
-        /// Final fallback (should never happen)
+        /// Final fallback
         let failCode =
             Asm(
                 RV.LI(Reg.a7, 10),
