@@ -971,6 +971,118 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
         ++ storeTagCode
         ++ storePayloadCode
 
+    | Match(expr, cases) ->
+        // Compile the expression being matched.
+        // Result: target register contains pointer to union value:
+        //   offset 0 -> tag
+        //   offset 4 -> payload
+        let exprCode = doCodegen env expr
+
+        /// Save the union pointer before loading the tag
+        let unionPtrReg = env.Target + 1u
+        let savePtrCode =
+            Asm(
+                RV.MV(Reg.r(unionPtrReg), Reg.r(env.Target)),
+                "Save union pointer of matched expression"
+            )
+
+        /// Load the runtime tag from heap
+        let loadTagCode =
+            Asm(
+                RV.LW(Reg.r(env.Target), Imm12(0), Reg.r(env.Target)),
+                "Load union tag from matched expression"
+            )
+
+        /// Final label after the whole pattern match
+        let endLabel = Util.genSymbol "match_end"
+
+        /// Extract all union
+        let (unionCases, _, _) = List.unzip3 cases
+
+        /// Generate code for one match branch
+        let folder (acc: Asm) ((label, varName, cont): string * string * TypedAST) =
+            /// Label to jump to if this case does NOT match
+            let nextCaseLabel = Util.genSymbol $"match_next_%s{label}"
+
+            let caseTag = labelDictLT[label]
+
+            /// Load case tag for comparison
+            let loadCaseTagCode =
+                Asm(
+                    RV.LI(Reg.r(env.Target + 2u), caseTag),
+                    $"Load tag for case '%s{label}'"
+                )
+
+            /// If tags are different, jump to next case
+            let compareCode =
+                Asm(
+                    RV.BNE(
+                        Reg.r(env.Target),
+                        Reg.r(env.Target + 2u),
+                        nextCaseLabel
+                    ),
+                    $"If tag != '%s{label}', skip this case"
+                )
+
+            /// Load payload from offset 4
+            let payloadLoadCode =
+                Asm(
+                    RV.LW(
+                        Reg.r(env.Target + 2u),
+                        Imm12(4),
+                        Reg.r(unionPtrReg)
+                    ),
+                    $"Load payload for case '%s{label}'"
+                )
+
+            /// Extend environment with matched variable
+            let caseEnv =
+                {
+                    env with
+                        Target = env.Target
+                        VarStorage =
+                            env.VarStorage.Add(
+                                varName,
+                                Storage.Reg(Reg.r(env.Target + 2u))
+                            )
+                }
+
+            /// Continuation code for this branch
+            let contCode = 
+                (doCodegen caseEnv cont).AddText(
+                    RV.J(endLabel),
+                    "Jump to end of match"
+                )
+
+            acc
+            ++ loadCaseTagCode
+            ++ compareCode
+            ++ payloadLoadCode
+            ++ contCode
+                .AddText(RV.LABEL(nextCaseLabel))
+
+        /// Generate all branches
+        let casesCode =
+            List.fold folder (Asm()) cases
+
+        /// Final fallback (should never happen)
+        let failCode =
+            Asm(
+                RV.LI(Reg.a7, 10),
+                "Unexpected unmatched union tag"
+            )
+            ++
+            Asm(
+                RV.ECALL,
+                ""
+            )
+
+        exprCode
+        ++ savePtrCode
+        ++ casesCode
+        ++ failCode
+            .AddText(RV.LABEL(endLabel))
+
     | Pointer(_) ->
         failwith "BUG: pointers cannot be compiled (by design!)"
 
