@@ -73,6 +73,33 @@ let internal testANFCodegen (file: string) (expected: int) =
             Expect.equal exit expected ($"RARS should have exited with code %d{expected} (%s{explainExpected}), "
                                         + $"got %d{exit} (%s{explainExit})")
 
+/// Compile a source file after closure conversion, and run the resulting
+/// assembly code on RARS, checking whether its return code matches the expected
+/// one.
+let internal testClosureCodegen (file: string) (expected: int) =
+    match (Util.parseFile file) with
+    | Error(e) -> failwith $"Parsing failed: %s{e}"
+    | Ok(ast) ->
+        match (Typechecker.typecheck ast) with
+        | Error(es) -> failwith $"Typing failed: %s{formatErrors es}"
+        | Ok(tast) ->
+            try
+                let closedAst = ClosureConversion.closureConvert tast
+
+                match (Typechecker.typecheck closedAst) with
+                | Error(es) -> failwith $"Typing closure-converted program failed: %s{formatErrors es}"
+                | Ok(closedTypedAst) ->
+                    let asm = RISCVCodegen.codegen closedTypedAst
+                    let explainExpected = RARS.explainExitCode expected
+                    let exit = RARS.launch (asm.ToString()) false
+                    let explainExit = RARS.explainExitCode exit
+                    Expect.equal exit expected ($"RARS should have exited with code %d{expected} (%s{explainExpected}), "
+                                                + $"got %d{exit} (%s{explainExit})")
+            with e ->
+                if expected = RISCVCodegen.assertExitCode then
+                    Expect.isTrue true $"Closure conversion failed as expected: %s{e.Message}"
+                else
+                    failwith $"Closure conversion failed unexpectedly: %s{e.Message}"
 
 /// Return an Expecto test list for the given 'phase' of the compiler. Note that
 /// the phase name must match the name of a subdirectory of 'tests/' containing
@@ -148,6 +175,11 @@ let tests = testList "tests" [
             testANFCodegen file 0
         <| fun file ->
             testANFCodegen file RISCVCodegen.assertExitCode
+    createTestList "closures"
+        <| fun file ->
+            testClosureCodegen file 0
+        <| fun file ->
+            testClosureCodegen file RISCVCodegen.assertExitCode
 ]
 
 
