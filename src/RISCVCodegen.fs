@@ -999,7 +999,7 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
         let folder (acc: Asm) ((label, varName, cont): string * string * TypedAST) =
             /// Label to jump to if this case does NOT match
             let nextCaseLabel = Util.genSymbol $"match_next_%s{label}"
-            let caseTag = labelDictLT[label]
+            let caseTag = Util.genSymbolId(label)
 
             /// Load case tag for comparison
             let loadCaseTagCode =

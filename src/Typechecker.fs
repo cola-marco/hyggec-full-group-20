@@ -11,8 +11,7 @@ open AST
 open Type
 
 let mutable labelCount = 0
-let labelDictLT = System.Collections.Generic.Dictionary<string, int>()
-let labelDictTL = System.Collections.Generic.Dictionary<int, string>()
+//let labelDictLT = System.Collections.Generic.Dictionary<string, int>()
 
 
 /// Representation of typing errors
@@ -134,13 +133,7 @@ let rec internal resolvePretype (env: TypingEnv) (pt: AST.PretypeNode): Result<T
                     fun l t -> 
                         {
                             Label = l;
-                            Tag = ( if labelDictLT.ContainsKey(l) then 
-                                        labelDictLT[l]
-                                    else 
-                                        labelDictLT[l] <- labelCount
-                                        labelDictTL[labelCount] <- l
-                                        labelCount <- labelCount + 1
-                                        labelCount - 1);
+                            Tag = Util.genSymbolId(l);
                             CaseType = t
                         }) caseLabels caseTypes))
 /// Resolve a type variable using the given typing environment: optionally
@@ -659,7 +652,7 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
         | Ok(texpr) ->
             // We type the union instance with the most precise labelled union
             // type that contains it
-            Ok { Pos = node.Pos; Env = env; Type = TUnion([{Label = label; Tag = labelDictLT[label]; CaseType = texpr.Type}]);
+            Ok { Pos = node.Pos; Env = env; Type = TUnion([{Label = label; Tag = Util.genSymbolId(label); CaseType = texpr.Type}]);
                  Expr = UnionCons(label, texpr) }
         | Error(es) -> Error(es)
 
