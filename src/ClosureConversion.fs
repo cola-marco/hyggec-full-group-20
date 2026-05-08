@@ -335,18 +335,13 @@ let rec replaceCapturedVars (closureArgName: string) (captured: Set<string>) (no
 
     | other ->
         mkLikeUntyped node other
-    
-// Convert a lambda expression into a closure struct.
-// This is used both for let-bound lambdas and nested lambdas.
-and convertLambdaToClosure (lambdaNode: Typechecker.TypedAST) (args: List<string * AST.PretypeNode>) (body: Typechecker.TypedAST) : ConversionResult =
-    let closureTypeName =
-        nameGenerator.Generate "Closure"
 
+// Convert a lambda into a closure struct using a given closure type name
+// and a given set of captured variables. This is used when two lambdas
+// must share the same closure type, e.g. in both branches of an if.
+and convertLambdaToClosureWith (closureTypeName: string)   (captured: Set<string>)  (lambdaNode: Typechecker.TypedAST)   (args: List<string * AST.PretypeNode>)   (body: Typechecker.TypedAST) : ConversionResult =
     let closureArgName =
         nameGenerator.Generate "clos"
-
-    let captured =
-        ASTUtil.freeVars lambdaNode
 
     let mutableCaptured =
         captured
@@ -360,7 +355,7 @@ and convertLambdaToClosure (lambdaNode: Typechecker.TypedAST) (args: List<string
 
     let originalArgTypes, _ =
         match lambdaNode.Type with
-        | TFun(argTypes, ret) -> 
+        | TFun(argTypes, ret) ->
             argTypes, ret
 
         | other ->
@@ -373,7 +368,7 @@ and convertLambdaToClosure (lambdaNode: Typechecker.TypedAST) (args: List<string
         bodyResult.ConvertedType
 
     let plainFunctionType =
-        mkPretype lambdaNode.Pos 
+        mkPretype lambdaNode.Pos
             (
                 Pretype.TFun(
                     closureTypePretype :: (originalArgTypes |> List.map (typeToPretype lambdaNode.Pos)),
@@ -384,14 +379,14 @@ and convertLambdaToClosure (lambdaNode: Typechecker.TypedAST) (args: List<string
     let capturedFields =
         captured
         |> Set.toList
-        |> List.map 
+        |> List.map
             (
                 fun varName ->
                     varName, typeToPretype lambdaNode.Pos (lookupVarType lambdaNode varName)
             )
 
     let closureStructType =
-        mkPretype lambdaNode.Pos 
+        mkPretype lambdaNode.Pos
             (
                 Pretype.TStruct(
                     ("$f", plainFunctionType) :: capturedFields
@@ -402,7 +397,7 @@ and convertLambdaToClosure (lambdaNode: Typechecker.TypedAST) (args: List<string
         replaceCapturedVars closureArgName captured bodyResult.Expr
 
     let plainFunction =
-        mkNode lambdaNode.Pos 
+        mkNode lambdaNode.Pos
             (
                 Lambda(
                     (closureArgName, closureTypePretype) :: args,
@@ -417,7 +412,7 @@ and convertLambdaToClosure (lambdaNode: Typechecker.TypedAST) (args: List<string
         let capturedValueFields =
             captured
             |> Set.toList
-            |> List.map 
+            |> List.map
                 (
                     fun varName ->
                         varName, mkNode lambdaNode.Pos (Var varName)
@@ -426,13 +421,13 @@ and convertLambdaToClosure (lambdaNode: Typechecker.TypedAST) (args: List<string
         functionField :: capturedValueFields
 
     let rawClosureStruct =
-        mkNode lambdaNode.Pos 
+        mkNode lambdaNode.Pos
             (
                 StructCons closureFields
             )
 
     let closureStruct =
-        mkNode lambdaNode.Pos 
+        mkNode lambdaNode.Pos
             (
                 Ascription(
                     closureTypePretype,
@@ -451,6 +446,17 @@ and convertLambdaToClosure (lambdaNode: Typechecker.TypedAST) (args: List<string
         TypeDefs = bodyResult.TypeDefs @ [generatedType]
         ConvertedType = TVar closureTypeName
     }
+
+// Convert a lambda expression into a closure struct.
+// This is used both for let-bound lambdas and nested lambdas.
+and convertLambdaToClosure (lambdaNode: Typechecker.TypedAST) (args: List<string * AST.PretypeNode>) (body: Typechecker.TypedAST) : ConversionResult =
+    let closureTypeName =
+        nameGenerator.Generate "Closure"
+
+    let captured =
+        ASTUtil.freeVars lambdaNode
+
+    convertLambdaToClosureWith closureTypeName captured lambdaNode args body
 
 /// Convert a typed expression as part of closure conversion.
 /// Most expressions keep the same structure, but the result also carries
@@ -588,10 +594,42 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
             ConvertedType = node.Type
         }
 
-    | If(condition, ifTrue, ifFalse) ->
-        let condResult = convertExpr condition
-        let trueResult = convertExpr ifTrue
-        let falseResult = convertExpr ifFalse
+    | If(condition, ({ Expr = Lambda(trueArgs, trueBody) } as trueLambda), ({ Expr = Lambda(falseArgs, falseBody) } as falseLambda)) 
+        when trueLambda.Type = falseLambda.Type ->
+
+        let condResult =
+            convertExpr condition
+
+        let sharedClosureTypeName =
+            nameGenerator.Generate "Closure"
+
+        let sharedCaptured =
+            Set.union (ASTUtil.freeVars trueLambda) (ASTUtil.freeVars falseLambda)
+
+        let trueResult =
+            convertLambdaToClosureWith sharedClosureTypeName sharedCaptured trueLambda trueArgs trueBody
+
+        let falseResult =
+            convertLambdaToClosureWith sharedClosureTypeName sharedCaptured falseLambda falseArgs falseBody
+
+        let sharedTypeDefs =
+            match trueResult.TypeDefs @ falseResult.TypeDefs with
+            | [] ->
+                []
+            | defs ->
+                // Both branches generate the same closure type. Keep only one copy
+                // of the shared closure type definition.
+                defs
+                |> List.fold
+                    (
+                        fun acc def ->
+                            if acc |> List.exists (fun existing -> existing.Name = def.Name) then
+                                acc
+                            else
+                                acc @ [def]
+                    )
+                    []
+
         {
             Expr = mkLike node 
                 (
@@ -601,9 +639,40 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                         falseResult.Expr
                     )
                 )
-            TypeDefs = condResult.TypeDefs @ trueResult.TypeDefs @ falseResult.TypeDefs
+
+            TypeDefs =
+                condResult.TypeDefs @ sharedTypeDefs
+
             ConvertedType =
-                trueResult.ConvertedType        }
+                TVar sharedClosureTypeName
+        }
+
+    | If(condition, ifTrue, ifFalse) ->
+        let condResult =
+            convertExpr condition
+
+        let trueResult =
+            convertExpr ifTrue
+
+        let falseResult =
+            convertExpr ifFalse
+
+        {
+            Expr = mkLike node 
+                (
+                    If(
+                        condResult.Expr,
+                        trueResult.Expr,
+                        falseResult.Expr
+                    )
+                )
+
+            TypeDefs =
+                condResult.TypeDefs @ trueResult.TypeDefs @ falseResult.TypeDefs
+
+            ConvertedType =
+                trueResult.ConvertedType
+        }
 
     | Seq nodes ->
         let nodeResults = nodes |> List.map convertExpr
@@ -866,17 +935,46 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
         }
 
     | StructCons fields ->
-        let fieldResults = fields |> List.map (fun (name, expr) -> name, convertExpr expr)
+        let fieldResults =
+            fields
+            |> List.map 
+                (
+                    fun (name, expr) ->
+                        name, convertExpr expr
+                )
+
+        let convertedFields =
+            fieldResults
+            |> List.map 
+                (
+                    fun (name, result) ->
+                        name, result.Expr
+                )
+
+        let convertedFieldTypes =
+            fieldResults
+            |> List.map 
+                (
+                    fun (name, result) ->
+                        name, result.ConvertedType
+                )
+
         {
             Expr = mkLike node 
                 (
-                    StructCons(
-                        fieldResults |> List.map (fun (name, result) ->
-                            name, result.Expr)
-                    )
+                    StructCons convertedFields
                 )
-            TypeDefs = List.concat (fieldResults |> List.map (fun (_, result) -> result.TypeDefs))
-            ConvertedType = node.Type
+
+            TypeDefs =
+                fieldResults
+                |> List.collect 
+                    (
+                        fun (_, result) ->
+                            result.TypeDefs
+                    )
+
+            ConvertedType =
+                TStruct convertedFieldTypes
         }
 
     | FieldSelect(target, field) ->

@@ -1,0 +1,11 @@
+let base: int = 10;
+
+let makeTriple = fun (x: int) ->
+    fun (y: int) ->
+        fun (z: int) ->
+            base + x + y + z;
+
+let addOne = makeTriple(1);
+let addOneTwo = addOne(2);
+
+assert(addOneTwo(3) = 16)
