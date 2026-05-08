@@ -325,6 +325,15 @@ let rec replaceCapturedVars (closureArgName: string) (captured: Set<string>) (no
                 )
             )
 
+    | Assign(target, expr) ->
+        mkLikeUntyped node 
+            (
+                Assign(
+                    replaceCapturedVars closureArgName captured target,
+                    replaceCapturedVars closureArgName captured expr
+                )
+            )
+            
     | Seq nodes ->
         mkLikeUntyped node 
             (
