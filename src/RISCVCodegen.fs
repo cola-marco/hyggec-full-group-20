@@ -16,6 +16,11 @@ open ASTUtil
 /// Exit code used in the generated assembly to signal an assertion violation.
 let assertExitCode = 42 // Must be non-zero
 
+let internal floatToWord (f: float32) : int32 =
+    let b = System.BitConverter.GetBytes(f)
+    if not System.BitConverter.IsLittleEndian then System.Array.Reverse(b)
+    System.BitConverter.ToInt32(b)
+
 
 /// Storage information for variables.
 [<RequireQualifiedAccess; StructuralComparison; StructuralEquality>]
@@ -727,83 +732,69 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
             ])
 
     | IncDec(op, name) ->
+        let isPost = 
+            match op with
+                | IncDecOp.PostInc | IncDecOp.PostDec -> true
+                | _ -> false
+
         match (env.VarStorage.TryFind name) with
         | Some(Storage.Reg(reg)) ->
-            let delta = 
-                match op with
-                | IncDecOp.PreInc | IncDecOp.PostInc -> 1
-                | IncDecOp.PreDec | IncDecOp.PostDec -> -1
-            Asm([ 
-                (RV.ADDI(Reg.r(env.Target), reg, Imm12(delta)),
-                "Increment/decrement variable into target register")
-                (RV.MV(reg, Reg.r(env.Target)),
-                "Update variable with new value") ])
+            let delta = match op with
+                        | IncDecOp.PreInc | IncDecOp.PostInc -> 1
+                        | IncDecOp.PreDec | IncDecOp.PostDec -> -1
+            Asm([
+                if isPost then
+                    (RV.MV(Reg.r(env.Target), reg),          "Save original value into target register")
+                (RV.ADDI(reg, reg, Imm12(delta)),             "Increment/decrement variable in place")
+                if not isPost then
+                    (RV.MV(Reg.r(env.Target), reg),          "Move result to target register") ])
+
         | Some(Storage.FPReg(fpreg)) ->
-            let delta = 
-                match op with
-                | IncDecOp.PreInc | IncDecOp.PostInc -> 1.0f
-                | IncDecOp.PreDec | IncDecOp.PostDec -> -1.0f
-            let deltaBytes = System.BitConverter.GetBytes(delta)
-            if (not System.BitConverter.IsLittleEndian)
-                then System.Array.Reverse(deltaBytes)
-            let deltaWord: int32 = System.BitConverter.ToInt32(deltaBytes)
-            Asm([ 
-                (RV.LI(Reg.r(env.Target), deltaWord),
-                "Load delta as IEEE 754")
-                (RV.FMV_W_X(FPReg.r(env.FPTarget + 1u), Reg.r(env.Target)),
-                "Move delta to fp register")
-                (RV.FADD_S(fpreg, fpreg, FPReg.r(env.FPTarget + 1u)),
-                "Increment/decrement float variable in place")
-                (RV.FMV_S(FPReg.r(env.FPTarget), fpreg),
-                "Move result to target fp register") ])
+            let delta = match op with
+                        | IncDecOp.PreInc | IncDecOp.PostInc -> 1.0f
+                        | IncDecOp.PreDec | IncDecOp.PostDec -> -1.0f
+            let deltaWord = floatToWord delta
+            Asm([
+                if isPost then
+                    (RV.FMV_S(FPReg.r(env.FPTarget), fpreg),            "Save original value into target fp register")
+                (RV.LI(Reg.r(env.Target), deltaWord),                    "Load delta as IEEE 754")
+                (RV.FMV_W_X(FPReg.r(env.FPTarget + 1u), Reg.r(env.Target)), "Move delta to fp register")
+                (RV.FADD_S(fpreg, fpreg, FPReg.r(env.FPTarget + 1u)),   "Increment/decrement float variable in place")
+                if not isPost then
+                    (RV.FMV_S(FPReg.r(env.FPTarget), fpreg),            "Move result to target fp register") ])
+
         | Some(Storage.Label(lab)) ->
             match node.Type with
             | t when (isSubtypeOf node.Env t TInt) ->
-                let delta = 
-                    match op with
-                    | IncDecOp.PreInc | IncDecOp.PostInc -> 1
-                    | IncDecOp.PreDec | IncDecOp.PostDec -> -1
-                Asm([ 
-                    (RV.LA(Reg.r(env.Target), lab),
-                    $"Load address of variable '%s{name}'")
-                    (RV.LW(Reg.r(env.Target + 1u), Imm12(0), Reg.r(env.Target)),
-                    $"Load value of variable '%s{name}'")
-                    (RV.ADDI(Reg.r(env.Target + 1u), Reg.r(env.Target + 1u), Imm12(delta)),
-                    "Increment/decrement value")
-                    (RV.SW(Reg.r(env.Target + 1u), Imm12(0), Reg.r(env.Target)),
-                    "Store updated value back to memory")
-                    (RV.MV(Reg.r(env.Target), Reg.r(env.Target + 1u)),
-                    "Move result to target register") ])
+                let delta = match op with
+                            | IncDecOp.PreInc | IncDecOp.PostInc -> 1
+                            | IncDecOp.PreDec | IncDecOp.PostDec -> -1
+                Asm([
+                    (RV.LA(Reg.r(env.Target + 2u), lab),                                    $"Load address of variable '%s{name}'")
+                    (RV.LW(Reg.r(env.Target + 1u), Imm12(0), Reg.r(env.Target + 2u)),      $"Load value of variable '%s{name}'")
+                    (RV.ADDI(Reg.r(env.Target), Reg.r(env.Target + 1u), Imm12(delta)),     "Compute incremented/decremented value")
+                    (RV.SW(Reg.r(env.Target), Imm12(0), Reg.r(env.Target + 2u)),           "Store updated value back to memory")
+                    if isPost then
+                        (RV.MV(Reg.r(env.Target), Reg.r(env.Target + 1u)),                  "Move result to target register") ])
             | t when (isSubtypeOf node.Env t TFloat) ->
-                let delta = 
-                    match op with
-                    | IncDecOp.PreInc | IncDecOp.PostInc -> 1.0f
-                    | IncDecOp.PreDec | IncDecOp.PostDec -> -1.0f
-                let deltaBytes = System.BitConverter.GetBytes(delta)
-                if (not System.BitConverter.IsLittleEndian)
-                    then System.Array.Reverse(deltaBytes)
-                let deltaWord: int32 = System.BitConverter.ToInt32(deltaBytes)
-                Asm([ 
-                    (RV.LA(Reg.r(env.Target), lab),
-                    $"Load address of variable '%s{name}'")
-                    (RV.LW(Reg.r(env.Target), Imm12(0), Reg.r(env.Target)),
-                    $"Load raw bits of variable '%s{name}'")
-                    (RV.FMV_W_X(FPReg.r(env.FPTarget), Reg.r(env.Target)),
-                    $"Move bits to fp register")
-                    (RV.LI(Reg.r(env.Target), deltaWord),
-                    "Load delta bits")
-                    (RV.FMV_W_X(FPReg.r(env.FPTarget + 1u), Reg.r(env.Target)),
-                    "Move delta bits to fp register")
-                    (RV.FADD_S(FPReg.r(env.FPTarget), FPReg.r(env.FPTarget),
-                                FPReg.r(env.FPTarget + 1u)),
-                    "Increment/decrement float value")
-                    (RV.FMV_X_W(Reg.r(env.Target), FPReg.r(env.FPTarget)),
-                    "Move result bits back to integer register")
-                    (RV.LA(Reg.r(env.Target + 1u), lab),
-                    $"Reload address of variable '%s{name}'")
-                    (RV.SW(Reg.r(env.Target), Imm12(0), Reg.r(env.Target + 1u)),
-                    $"Store updated float value back to memory") ])
-            | t -> failwith $"BUG: PreInc/PreDec on invalid type %O{t}"
+                let delta = match op with
+                            | IncDecOp.PreInc | IncDecOp.PostInc -> 1.0f
+                            | IncDecOp.PreDec | IncDecOp.PostDec -> -1.0f
+                let deltaWord = floatToWord delta
+                Asm([
+                    (RV.LA(Reg.r(env.Target), lab),                                      $"Load address of variable '%s{name}'")
+                    (RV.LW(Reg.r(env.Target + 1u), Imm12(0), Reg.r(env.Target)),         $"Load raw bits of variable '%s{name}'")
+                    (RV.FMV_W_X(FPReg.r(env.FPTarget), Reg.r(env.Target + 1u)),          "Move original bits to fp register")
+                    (RV.LI(Reg.r(env.Target + 1u), deltaWord),                           "Load delta bits")
+                    (RV.FMV_W_X(FPReg.r(env.FPTarget + 1u), Reg.r(env.Target + 1u)),    "Move delta bits to fp register")
+                    (RV.FADD_S(FPReg.r(env.FPTarget + 1u), FPReg.r(env.FPTarget),
+                                FPReg.r(env.FPTarget + 1u)),                              "Compute incremented/decremented float value")
+                    (RV.FMV_X_W(Reg.r(env.Target + 1u), FPReg.r(env.FPTarget + 1u)),    "Move updated bits to integer register")
+                    (RV.SW(Reg.r(env.Target + 1u), Imm12(0), Reg.r(env.Target)),         $"Store updated float value back to memory")
+                    // FPTarget holds original, FPTarget+1 holds new
+                    if not isPost then
+                        (RV.FMV_S(FPReg.r(env.FPTarget), FPReg.r(env.FPTarget + 1u)),    "Move result to target fp register") ])
+            | t -> failwith $"BUG: IncDec on invalid type %O{t}"
         | None -> failwith $"BUG: variable without storage: %s{name}"
 
 

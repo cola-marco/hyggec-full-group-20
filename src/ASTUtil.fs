@@ -200,7 +200,8 @@ let rec freeVars (node: Node<'E,'T>): Set<string> =
             Set.union acc ((freeVars cont).Remove var)
         /// Free variables in all match continuations
         let fvConts = List.fold folder Set[] cases
-        Set.union (freeVars expr) fvConts
+        Set.union (freeVars expr) fvConts    
+    | IncDec(op, name) -> Set[name]
 
 /// Compute the union of the free variables in a list of AST nodes.
 and internal freeVarsInList (nodes: List<Node<'E,'T>>): Set<string> =
@@ -274,7 +275,8 @@ let rec capturedVars (node: Node<'E,'T>): Set<string> =
             Set.union acc ((capturedVars cont).Remove var)
         /// Captured variables in all match continuations
         let cvConts = List.fold folder Set[] cases
-        Set.union (capturedVars expr) cvConts
+        Set.union (capturedVars expr) cvConts    
+    | IncDec(op, name) -> Set[]
 
 /// Compute the union of the captured variables in a list of AST nodes.
 and internal capturedVarsInList (nodes: List<Node<'E,'T>>): Set<string> =

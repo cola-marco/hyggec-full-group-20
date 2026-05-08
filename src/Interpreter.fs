@@ -507,21 +507,29 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
         | Some(v) ->
             match v.Expr with
             | IntVal(v1) ->
-                let v = 
+                let delta = 
                     match op with
                     | IncDecOp.PreInc | IncDecOp.PostInc -> 1
                     | IncDecOp.PreDec | IncDecOp.PostDec -> -1
-                let newNode = {node with Expr = IntVal(v1 + v)}
+                let newNode = {node with Expr = IntVal(v1 + delta)}
                 let env' = {env with Mutables = env.Mutables.Add(name, newNode)}
-                Some(env', {node with Expr = newNode.Expr})
+                let returnNode =
+                    match op with
+                    | IncDecOp.PostInc | IncDecOp.PostDec -> {node with Expr = IntVal(v1)}
+                    | IncDecOp.PreInc  | IncDecOp.PreDec  -> {node with Expr = newNode.Expr}
+                Some(env', returnNode)
             | FloatVal(v2) ->
-                let v = 
+                let delta = 
                     match op with
                     | IncDecOp.PreInc | IncDecOp.PostInc -> 1.0f
                     | IncDecOp.PreDec | IncDecOp.PostDec -> -1.0f
-                let newNode = {node with Expr = FloatVal(v2 + v)}
+                let newNode = {node with Expr = FloatVal(v2 + delta)}
                 let env' = {env with Mutables = env.Mutables.Add(name, newNode)}
-                Some(env', {node with Expr = newNode.Expr})
+                let returnNode =
+                    match op with
+                    | IncDecOp.PostInc | IncDecOp.PostDec -> {node with Expr = FloatVal(v2)}
+                    | IncDecOp.PreInc  | IncDecOp.PreDec  -> {node with Expr = newNode.Expr}
+                Some(env', returnNode)
             | _ -> None
         | None -> None
 

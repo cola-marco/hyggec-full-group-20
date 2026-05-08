@@ -1,2 +1,2 @@
-let mutable x = 1;
-++x : int
+let mutable x = 1.1f;
+++x : float
