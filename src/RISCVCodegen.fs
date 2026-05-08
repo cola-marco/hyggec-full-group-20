@@ -585,47 +585,39 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
         /// 'target' register (which we overwrite at the end of the 'scope'
         /// execution)
         let initCode = doCodegen env init
-        if isCV (name, scope)
-        then
-            let structNode = {node with Expr = StructCons([("value", init)])}
-            let varNode = {node with Expr = Var(name)}
-            let fieldSelectNode = {node with Expr = FieldSelect(varNode, "value")}
-            let scopeSubst = ASTUtil.subst scope name fieldSelectNode
-            doCodegen env {node with Expr = Let(name, structNode, scopeSubst)}
-        else
-            match init.Type with
-            | t when (isSubtypeOf init.Env t TUnit) ->
-                // The 'init' produces a unit value, i.e. nothing: we can keep using
-                // the same target registers, and we don't need to update the
-                // variables-to-registers mapping.
-                initCode ++ (doCodegen env scope)
-            | t when (isSubtypeOf init.Env t TFloat) ->
-                /// Target register for compiling the 'let' scope
-                let scopeTarget = env.FPTarget + 1u
-                /// Variable storage for compiling the 'let' scope
-                let scopeVarStorage =
-                    env.VarStorage.Add(name, Storage.FPReg(FPReg.r(env.FPTarget)))
-                /// Environment for compiling the 'let' scope
-                let scopeEnv = { env with FPTarget = scopeTarget
-                                          VarStorage = scopeVarStorage }
-                initCode
-                    ++ (doCodegen scopeEnv scope)
-                        .AddText(RV.FMV_S(FPReg.r(env.FPTarget),
-                                        FPReg.r(scopeTarget)),
-                                "Move result of 'let' scope expression into target register")
-            | _ ->  // Default case for integer-like initialisation expressions
-                /// Target register for compiling the 'let' scope
-                let scopeTarget = env.Target + 1u
-                /// Variable storage for compiling the 'let' scope
-                let scopeVarStorage =
-                    env.VarStorage.Add(name, Storage.Reg(Reg.r(env.Target)))
-                /// Environment for compiling the 'let' scope
-                let scopeEnv = { env with Target = scopeTarget
-                                          VarStorage = scopeVarStorage }
-                initCode
-                    ++ (doCodegen scopeEnv scope)
-                        .AddText(RV.MV(Reg.r(env.Target), Reg.r(scopeTarget)),
-                                "Move 'let' scope result to 'let' target register")
+        match init.Type with
+        | t when (isSubtypeOf init.Env t TUnit) ->
+            // The 'init' produces a unit value, i.e. nothing: we can keep using
+            // the same target registers, and we don't need to update the
+            // variables-to-registers mapping.
+            initCode ++ (doCodegen env scope)
+        | t when (isSubtypeOf init.Env t TFloat) ->
+            /// Target register for compiling the 'let' scope
+            let scopeTarget = env.FPTarget + 1u
+            /// Variable storage for compiling the 'let' scope
+            let scopeVarStorage =
+                env.VarStorage.Add(name, Storage.FPReg(FPReg.r(env.FPTarget)))
+            /// Environment for compiling the 'let' scope
+            let scopeEnv = { env with FPTarget = scopeTarget
+                                                 VarStorage = scopeVarStorage }
+            initCode
+                ++ (doCodegen scopeEnv scope)
+                    .AddText(RV.FMV_S(FPReg.r(env.FPTarget),
+                                    FPReg.r(scopeTarget)),
+                            "Move result of 'let' scope expression into target register")
+        | _ ->  // Default case for integer-like initialisation expressions
+            /// Target register for compiling the 'let' scope
+            let scopeTarget = env.Target + 1u
+            /// Variable storage for compiling the 'let' scope
+            let scopeVarStorage =
+                env.VarStorage.Add(name, Storage.Reg(Reg.r(env.Target)))
+            /// Environment for compiling the 'let' scope
+            let scopeEnv = { env with Target = scopeTarget
+                                               VarStorage = scopeVarStorage }
+            initCode
+                ++ (doCodegen scopeEnv scope)
+                    .AddText(RV.MV(Reg.r(env.Target), Reg.r(scopeTarget)),
+                            "Move 'let' scope result to 'let' target register")
 
     | Assign(lhs, rhs) ->
         match lhs.Expr with

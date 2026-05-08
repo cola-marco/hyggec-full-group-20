@@ -76,50 +76,6 @@ type internal RuntimeEnv<'E,'T> = {
           + $"%s{Util.nl}  - PtrInfo: %s{ptrInfoStr}"
 
 
-let rec internal isCV (varName, (scope: Node<'a,'b>)) =
-    match scope.Expr with
-    | Lambda(args, body) ->
-        if List.exists (fun (name, _) -> name = varName) args then false
-        else isCV(varName, body)
-    | Var(name) -> name = varName
-    | UnitVal | BoolVal(_) | IntVal(_) | FloatVal(_) | StringVal(_) | Pointer(_) -> false
-    | Let(name, init, scope) | LetT(name, _, init, scope) | LetMut(name, init, scope) ->
-        let cvInit = isCV(varName, init)
-        let cvScope = if name = varName then false else isCV(varName, scope)
-        cvInit || cvScope
-    | BinNumOp(_, lhs, rhs) | BinLogicOp(_, lhs, rhs) | BinRelOp(_, lhs, rhs) ->
-        isCV(varName, lhs) || isCV(varName, rhs)
-    | Sqrt(arg) | Not(arg) | Print(arg) | PrintLn(arg) | Assertion(arg)
-    | Ascription(_, arg) | UnionCons(_, arg) | ArrayLength(arg) | Copy(arg) | DeepCopy(arg) ->
-        isCV(varName, arg)
-    | If(cond, ifTrue, ifFalse) ->
-        isCV(varName, cond) || isCV(varName, ifTrue) || isCV(varName, ifFalse)
-    | Seq(nodes) ->
-        List.exists (fun n -> isCV(varName, n)) nodes
-    | Type(_, _, scope) ->
-        isCV(varName, scope)
-    | While(cond, body) | DoWhile(body, cond) | ArrayCons(cond, body) ->
-        isCV(varName, cond) || isCV(varName, body)
-    | For(name, init, cond, step, body) ->
-        isCV(varName, init) ||
-        if name = varName then false
-        else isCV(varName, cond) || isCV(varName, step) || isCV(varName, body)
-    | Application(expr, args) ->
-        isCV(varName, expr) || List.exists (fun a -> isCV(varName, a)) args
-    | StructCons(fields) ->
-        List.exists (fun (_, n) -> isCV(varName, n)) fields
-    | FieldSelect(target, _) ->
-        isCV(varName, target)
-    | Assign(target, expr) ->
-        isCV(varName, target) || isCV(varName, expr)
-    | Match(expr, cases) ->
-        isCV(varName, expr) || List.exists (fun (_, v, cont) ->
-            if v = varName then false else isCV(varName, cont)) cases
-    | ArrayElem(name, index) ->
-        isCV(varName, name) || isCV(varName, index)
-    | ReadInt | ReadFloat -> false
-
-
 /// Attempt to reduce the given AST node by one step, using the given runtime
 /// environment.  If a reduction is possible, return the reduced node and an
 /// updated runtime environment; otherwise, return None.
@@ -445,45 +401,33 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
             Some(env, {node with Expr = (ASTUtil.subst scope name init).Expr})
         | None -> None
 
-    | LetMut(name, init, scope) when (isValue scope) ->
-        if isCV (name, scope)
-        then
-            let structNode = {node with Expr = StructCons([("value", init)])}
-            let scopeSubst = ASTUtil.subst scope name {node with Expr = FieldSelect({node with Expr = Var(name)}, "value")}
-            Some(env, {node with Expr = Let(name, structNode, scopeSubst)})
-        else
-            Some(env, {node with Expr = scope.Expr})
+    | LetMut(_, _, scope) when (isValue scope) ->
+        Some(env, {node with Expr = scope.Expr})
     | LetMut(name, init, scope) ->
         match (reduce env init) with
         | Some(env', init') ->
             Some(env', {node with Expr = LetMut(name, init', scope)})
         | None when (isValue init) ->
-            if isCV (name, scope)
-            then
-                let structNode = {node with Expr = StructCons([("value", init)])}
-                let scopeSubst = ASTUtil.subst scope name {node with Expr = FieldSelect({node with Expr = Var(name)}, "value")}
-                Some(env, {node with Expr = Let(name, structNode, scopeSubst)})
-            else
-                /// Runtime environment for reducing the 'let mutable...' scope
-                let env' = {env with Mutables = env.Mutables.Add(name, init)}
-                match (reduce env' scope) with
-                | Some(env'', scope') ->
-                    /// Updated init value for the mutable variable
-                    let init' = env''.Mutables[name] // Crash if 'name' not found
-                    /// Updated runtime environment.  If the declared mutable
-                    /// variable 'name' was defined in the outer scope, we restore
-                    /// its old value (consequently, any update to the redefined
-                    /// variable 'name' is only visible in its scope).  Otherwise,
-                    /// we remove it from the updated runtime environment (so it
-                    /// is only visible in its scope)
-                    let env''' =
-                        match (env.Mutables.TryFind(name)) with
-                        | Some(v) -> {env'' with
-                                        Mutables = env''.Mutables.Add(name, v)}
-                        | None -> {env'' with
-                                    Mutables = env''.Mutables.Remove(name)}
-                    Some(env''', {node with Expr = LetMut(name, init', scope')})
-                | None -> None
+            /// Runtime environment for reducing the 'let mutable...' scope
+            let env' = {env with Mutables = env.Mutables.Add(name, init)}
+            match (reduce env' scope) with
+            | Some(env'', scope') ->
+                /// Updated init value for the mutable variable
+                let init' = env''.Mutables[name] // Crash if 'name' not found
+                /// Updated runtime environment.  If the declared mutable
+                /// variable 'name' was defined in the outer scope, we restore
+                /// its old value (consequently, any update to the redefined
+                /// variable 'name' is only visible in its scope).  Otherwise,
+                /// we remove it from the updated runtime environment (so it
+                /// is only visible in its scope)
+                let env''' =
+                    match (env.Mutables.TryFind(name)) with
+                    | Some(v) -> {env'' with
+                                    Mutables = env''.Mutables.Add(name, v)}
+                    | None -> {env'' with
+                                Mutables = env''.Mutables.Remove(name)}
+                Some(env''', {node with Expr = LetMut(name, init', scope')})
+            | None -> None
         | None -> None
     
     | Assign({Expr = Application(appExpr, appArgs)} as target, expr) when appExpr.Expr = Var "arrayElem" && appArgs.Length = 2 ->
