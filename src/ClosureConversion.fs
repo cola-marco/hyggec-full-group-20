@@ -602,8 +602,8 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                     )
                 )
             TypeDefs = condResult.TypeDefs @ trueResult.TypeDefs @ falseResult.TypeDefs
-            ConvertedType = node.Type
-        }
+            ConvertedType =
+                trueResult.ConvertedType        }
 
     | Seq nodes ->
         let nodeResults = nodes |> List.map convertExpr
@@ -613,8 +613,12 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                     Seq(nodeResults |> List.map (fun r -> r.Expr))
                 )
             TypeDefs = List.concat (nodeResults |> List.map (fun r -> r.TypeDefs))
-            ConvertedType = node.Type
-        }
+            ConvertedType =
+                match List.tryLast nodeResults with
+                | Some lastResult ->
+                    lastResult.ConvertedType
+                | None ->
+                    node.Type        }
 
     | Type(name, def, scope) ->
         let scopeResult = convertExpr scope
@@ -628,7 +632,7 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                     )
                 )
             TypeDefs = scopeResult.TypeDefs
-            ConvertedType = node.Type
+            ConvertedType = scopeResult.ConvertedType
         }
 
     | Ascription(tpe, inner) ->
@@ -642,7 +646,8 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                     )
                 )
             TypeDefs = innerResult.TypeDefs
-            ConvertedType = node.Type
+            ConvertedType = innerResult.ConvertedType
+
         }
 
     | Assertion arg ->
@@ -677,12 +682,16 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                 initResult.TypeDefs @ scopeResult.TypeDefs
 
             ConvertedType =
-                node.Type
+                scopeResult.ConvertedType
         }
 
     | Let(name, init, scope) ->
-        let initResult = convertExpr init
-        let scopeResult = convertExpr scope
+        let initResult =
+            convertExpr init
+
+        let scopeResult =
+            convertExpr scope
+
         {
             Expr = mkLike node 
                 (
@@ -692,13 +701,21 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                         scopeResult.Expr
                     )
                 )
-            TypeDefs = initResult.TypeDefs @ scopeResult.TypeDefs
-            ConvertedType = node.Type
+
+            TypeDefs =
+                initResult.TypeDefs @ scopeResult.TypeDefs
+
+            ConvertedType =
+                scopeResult.ConvertedType
         }
 
     | LetT(name, tpe, init, scope) ->
-        let initResult = convertExpr init
-        let scopeResult = convertExpr scope
+        let initResult =
+            convertExpr init
+
+        let scopeResult =
+            convertExpr scope
+
         {
             Expr = mkLike node 
                 (
@@ -709,13 +726,21 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                         scopeResult.Expr
                     )
                 )
-            TypeDefs = initResult.TypeDefs @ scopeResult.TypeDefs
-            ConvertedType = node.Type
+
+            TypeDefs =
+                initResult.TypeDefs @ scopeResult.TypeDefs
+
+            ConvertedType =
+                scopeResult.ConvertedType
         }
 
     | LetMut(name, init, scope) ->
-        let initResult = convertExpr init
-        let scopeResult = convertExpr scope
+        let initResult =
+            convertExpr init
+
+        let scopeResult =
+            convertExpr scope
+
         {
             Expr = mkLike node 
                 (
@@ -725,8 +750,12 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                         scopeResult.Expr
                     )
                 )
-            TypeDefs = initResult.TypeDefs @ scopeResult.TypeDefs
-            ConvertedType = node.Type
+
+            TypeDefs =
+                initResult.TypeDefs @ scopeResult.TypeDefs
+
+            ConvertedType =
+                scopeResult.ConvertedType
         }
 
     | Assign(target, expr) ->
@@ -771,7 +800,7 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                     )
                 )
             TypeDefs = bodyResult.TypeDefs @ condResult.TypeDefs
-            ConvertedType = node.Type
+            ConvertedType = bodyResult.ConvertedType
         }
 
     | For(name, init, cond, step, body) ->
