@@ -1,0 +1,8 @@
+// ors truth table: true || true = true
+assert(if (true || true) then true else false);
+// ors truth table: true || false = true
+assert(if (true || false) then true else false);
+// ors truth table: false || true = true
+assert(if (false || true) then true else false);
+// ors truth table: false || false = false
+assert(if (false || false) then false else true)
