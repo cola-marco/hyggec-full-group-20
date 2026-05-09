@@ -1,0 +1,24 @@
+type Inner = struct {
+    a: int;
+    ok: bool
+};
+
+type Outer = struct {
+    inner: Inner;
+    label: string
+};
+
+let s = struct {
+    inner = struct {
+        a = 5;
+        ok = false
+    };
+    label = "sample"
+};
+
+let limit = 3;
+let unused = 999;
+
+let g = fun (n: int) -> n + 1;
+
+assert(s.inner.a < g(limit))
