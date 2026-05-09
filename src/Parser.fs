@@ -933,7 +933,8 @@ let rec fixLetMut (node: Node<'a,'b>): Node<'a,'b> =
     | ArrayElem(name, index) ->
         {node with Expr = ArrayElem(fixLetMut name, fixLetMut index)}
     | UnitVal | BoolVal(_) | IntVal(_) | FloatVal(_) | StringVal(_)
-    | Pointer(_) | Var(_) | ReadInt | ReadFloat -> node
+    | Pointer(_) | Var(_) | ReadInt | ReadFloat -> node    
+    | IncDec(op, name) -> node
 
 /// Parse the given array of 'tokens' with positions and return either Ok
 /// UntypedAST, or an Error with a position and a message.
