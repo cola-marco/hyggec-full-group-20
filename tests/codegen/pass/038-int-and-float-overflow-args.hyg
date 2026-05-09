@@ -1,0 +1,15 @@
+fun intAndFloatOverflow(
+    i1: int, i2: int, i3: int, i4: int,
+    i5: int, i6: int, i7: int, i8: int,
+    i9: int,
+    f1: float, f2: float, f3: float, f4: float,
+    f5: float, f6: float, f7: float, f8: float,
+    f9: float
+): int = {
+    i9
+};
+
+assert(intAndFloatOverflow(
+    1, 2, 3, 4, 5, 6, 7, 8, 9,
+    1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f
+) = 9)

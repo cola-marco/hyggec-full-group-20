@@ -209,7 +209,83 @@ let rec isSubtypeOf (env: TypingEnv) (t1: Type) (t2: Type): bool =
     | (TArray(t1), TArray(t2)) when t1 = t2 -> true
     | (_, _) -> false
 
+/// Compute the least upper bound (LUB) of two types, if it exists.
+let rec lub (env: TypingEnv) (t1: Type) (t2: Type) : Option<Type> =
+    let t1 = expandType env t1
+    let t2 = expandType env t2
 
+    if isSubtypeOf env t1 t2 then Some(t2)
+    elif isSubtypeOf env t2 t1 then Some(t1)
+    else
+        match (t1, t2) with
+        | (TUnion(cases1), TUnion(cases2)) ->
+            let map1 = Map.ofList cases1
+            let map2 = Map.ofList cases2
+
+            /// Preserve label order: first labels from cases1, then new labels from cases2
+            let labels1 = List.map fst cases1
+            let labels2 = List.map fst cases2
+            let labels =
+                labels1 @ (List.filter (fun l -> not (List.contains l labels1)) labels2)
+
+            let folder (acc: Option<List<string * Type>>) (label: string) =
+                match acc with
+                | None -> None
+                | Some(cs) ->
+                    match (Map.tryFind label map1, Map.tryFind label map2) with
+                    | (Some(t1), Some(t2)) ->
+                        match lub env t1 t2 with
+                        | Some(t) -> Some(cs @ [(label, t)])
+                        | None -> None
+                    | (Some(t), None)
+                    | (None, Some(t)) ->
+                        Some(cs @ [(label, t)])
+                    | (None, None) ->
+                        Some(cs)
+
+            match List.fold folder (Some([])) labels with
+            | Some(cases) -> Some(TUnion(cases))
+            | None -> None
+
+        | (TStruct(fields1), TStruct(fields2)) ->
+            /// With the current subtype relation for structs, the natural LUB
+            /// is their common compatible prefix.
+            let rec commonPrefixLub fs1 fs2 acc =
+                match (fs1, fs2) with
+                | ((name1, ty1)::rest1, (name2, ty2)::rest2) when name1 = name2 ->
+                    match lub env ty1 ty2 with
+                    | Some(ty) -> commonPrefixLub rest1 rest2 (acc @ [(name1, ty)])
+                    | None -> None
+                | _ ->
+                    Some(acc)
+
+            match commonPrefixLub fields1 fields2 [] with
+            | Some([]) -> None
+            | Some(fields) -> Some(TStruct(fields))
+            | None -> None
+
+        | (TArray(t1), TArray(t2)) ->
+            match lub env t1 t2 with
+            | Some(t) -> Some(TArray(t))
+            | None -> None
+
+        | _ ->
+            None
+
+/// Compute the LUB of a non-empty list of types.
+let lubMany (env: TypingEnv) (types: List<Type>) : Option<Type> =
+    match types with
+    | [] -> None
+    | t::ts ->
+        List.fold
+            (fun acc t2 ->
+                match acc with
+                | Some(t1) -> lub env t1 t2
+                | None -> None)
+            (Some(t))
+            ts
+
+        
 /// Perform type checking on an untyped AST, using the given typing environment.
 /// Return a well-typed AST in case of success, or a sequence of error messages
 /// in case of failure.
@@ -353,19 +429,20 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
         match (typer env cond) with
         | Ok(tcond) when (isSubtypeOf env tcond.Type TBool) ->
             match ((typer env ifT), (typer env ifF)) with
-            | (Ok(tifT), Ok(tifF)) when (isSubtypeOf env tifT.Type tifF.Type) ->
-                Ok { Pos = node.Pos; Env = env; Type = tifF.Type
-                     Expr = If(tcond, tifT, tifF) }
-            | (Ok(tifT), Ok(tifF)) when (isSubtypeOf env tifF.Type tifT.Type) ->
-                Ok { Pos = node.Pos; Env = env; Type = tifT.Type
-                     Expr = If(tcond, tifT, tifF) }
             | (Ok(tifT), Ok(tifF)) ->
-                Error([(node.Pos, $"mismatching 'then' and 'else' types: "
-                               + $"%O{tifT.Type} and %O{tifF.Type}")])
-            | otherwise -> mergeErrors otherwise
+                match (lub env tifT.Type tifF.Type) with
+                | Some(lubType) ->
+                    Ok { Pos = node.Pos; Env = env; Type = lubType;
+                        Expr = If(tcond, tifT, tifF) }
+                | None ->
+                    let errMsg =
+                        $"mismatching 'then' and 'else' types: could not compute a least upper bound for %O{tifT.Type} and %O{tifF.Type}"
+                    Error([(node.Pos, errMsg)])
+            | (Ok(_), Error(es)) -> Error(es)
+            | (Error(es), Ok(_)) -> Error(es)
+            | (Error(es1), Error(es2)) -> Error(es1 @ es2)
         | Ok(tcond) ->
-            Error([(cond.Pos, $"'if' condition: expected type %O{TBool}, "
-                              + $"found %O{tcond.Type}")])
+            Error([(cond.Pos, $"'if' condition: expected type %O{TBool}, found %O{tcond.Type}")])
         | Error(es) -> Error(es)
 
     | Seq(nodes) ->
@@ -552,6 +629,17 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
             Ok { Pos = node.Pos; Env = env; Type = TUnit;
                  Expr = For(name, tInit, tCond, tStep, tBody) }
    
+    | IncDec(op, name) ->
+        if (env.Mutables.Contains name) then
+            if isSubtypeOf env (env.Vars.[name]) TInt 
+                then Ok { Pos = node.Pos; Env = env; Type = TInt; Expr = IncDec(op, name)}
+            elif isSubtypeOf env (env.Vars.[name]) TFloat 
+                then Ok { Pos = node.Pos; Env = env; Type = TFloat; Expr = IncDec(op, name)}
+            else Error([(node.Pos, $"IncDec {op}: expected type %O{TInt} or %O{TFloat}, "
+                            + $"found %O{env.Vars.[name]}")])
+        else Error([(node.Pos, $"IncDec {op} to non-mutable or non-existent variable %s{name}")])
+
+
     | Lambda(args, body) ->
         let (argNames, argPretypes) = List.unzip args
         /// Duplicate names in 'lambda' arguments
@@ -704,53 +792,47 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
                 match (expandType env texpr.Type) with
                 | TUnion(unionCases) ->
                     let (unionLabels, unionTypes) = List.unzip unionCases
-                    /// The function 'caseTyper' is mapped over all
-                    /// 'unionCases': it looks for the matched label in
-                    /// 'unionLabels', extracts the corresponding type from
-                    /// 'unionTypes', and type-checks the match continuation by
-                    /// introducing the matched variable and type in the
-                    /// environment.
+                    /// The function 'caseTyper' is mapped over all 'cases': it looks
+                    /// for the matched label in 'unionLabels', extracts the
+                    /// corresponding type from 'unionTypes', and type-checks the
+                    /// continuation by introducing the matched variable and type in
+                    /// the environment.
                     let caseTyper (label, v, cont: UntypedAST): TypingResult =
                         match (List.tryFindIndex (fun l -> l = label) unionLabels) with
                         | Some(i) ->
-                            /// Updated environment for type-checking the union
-                            /// case continuation
+                            /// Updated environment for type-checking the union case continuation
                             let env2 = {env with Vars = env.Vars.Add(v, unionTypes.[i])}
                             typer env2 cont
-                        | None -> Error([(cont.Pos, $"invalid match case: %s{label}")])
+                        | None ->
+                            Error([(cont.Pos, $"invalid match case: %s{label}")])
+
                     /// Typed continuations (possibly with errors)
                     let tconts = List.map caseTyper cases
                     /// Typing errors in continuations
                     let errors = collectErrors tconts
-                    if errors.IsEmpty then
+                    if not errors.IsEmpty then Error(errors)
+                    else
                         /// Typed continuations, without errors
                         let typedConts = List.map getOkValue tconts
-                        /// Desired type for all union cases (taken from the
-                        /// first union case)
-                        let matchType = typedConts.[0].Type
-                        /// Has the given AST node a "bad" type that is not a
-                        /// subtype of 'matchType'?
-                        let hasBadType (c: TypedAST) =
-                            not (isSubtypeOf env c.Type matchType)
-                        /// List of match continuation types that are not compatible
-                        /// with 'matchType'
-                        let badTypes = List.filter hasBadType typedConts.[1..]
-                        if badTypes.IsEmpty then
+                        /// Types of all match continuations
+                        let contTypes = List.map (fun (c: TypedAST) -> c.Type) typedConts
+
+                        match (lubMany env contTypes) with
+                        | Some(matchType) ->
                             /// Match case labels and variables
                             let (caseLabels, caseVars, _) = List.unzip3 cases
                             /// Typed match cases
                             let tcases = List.zip3 caseLabels caseVars typedConts
                             Ok { Pos = node.Pos; Env = env; Type = matchType;
-                                 Expr = Match(texpr, tcases)}
-                        else
-                            let errFmt (c: TypedAST) =
-                                (c.Pos, $"pattern match result type mismatch: "
-                                        + $"expected %O{matchType}, found %O{c.Type}")
-                            Error(List.map errFmt badTypes)
-                    else Error(errors)
+                                Expr = Match(texpr, tcases) }
+                        | None ->
+                            let errMsg =
+                                $"pattern match result type mismatch: could not compute a least upper bound for %s{Util.formatSeq contTypes}"
+                            Error([(node.Pos, errMsg)])
                 | _ ->
                     Error([(expr.Pos, $"cannot match on expression of type %O{texpr.Type}")])
             | Error(es) -> Error(es)
+
     | ArrayCons(size, init) ->
         let sizeTyping = typer env size
         let initTyping = typer env init

@@ -1,0 +1,8 @@
+fun mixedNoStack(
+    x1: int, x2: int, x3: int, x4: int, x5: int,
+    y1: float, y2: float, y3: float, y4: float, y5: float
+): int = {
+    x5
+};
+
+assert(mixedNoStack(1, 2, 3, 4, 5, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f) = 5)

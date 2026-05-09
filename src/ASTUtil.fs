@@ -153,7 +153,8 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
     | ArrayElem(arr, index) ->
         let substArr= subst arr var sub
         let substIndex= subst index var sub
-        {node with Expr = ArrayElem(substArr, substIndex)}
+        {node with Expr = ArrayElem(substArr, substIndex)}    
+    | IncDec(op, name) -> failwith "Not Implemented"
     
     | Slice(arr, lo, hi) ->
         let substArr = subst arr var sub 
@@ -226,13 +227,14 @@ let rec freeVars (node: Node<'E,'T>): Set<string> =
             Set.union acc ((freeVars cont).Remove var)
         /// Free variables in all match continuations
         let fvConts = List.fold folder Set[] cases
-        Set.union (freeVars expr) fvConts
+        Set.union (freeVars expr) fvConts    
     | ArrayCons(size, init) -> 
         Set.union (freeVars size) (freeVars init)
     | ArrayLength(arr) -> 
         freeVars arr
     | ArrayElem(arr, index) -> 
         Set.union (freeVars arr) (freeVars index)
+    | IncDec(op, name) -> Set[name]    
 
 /// Compute the union of the free variables in a list of AST nodes.
 and internal freeVarsInList (nodes: List<Node<'E,'T>>): Set<string> =
@@ -306,8 +308,9 @@ let rec capturedVars (node: Node<'E,'T>): Set<string> =
             Set.union acc ((capturedVars cont).Remove var)
         /// Captured variables in all match continuations
         let cvConts = List.fold folder Set[] cases
-        Set.union (capturedVars expr) cvConts
-
+        Set.union (capturedVars expr) cvConts    
+    | IncDec(op, name) -> Set[]    
+    
 /// Compute the union of the captured variables in a list of AST nodes.
 and internal capturedVarsInList (nodes: List<Node<'E,'T>>): Set<string> =
     /// Compute the free variables of 'node' and add them to the accumulator

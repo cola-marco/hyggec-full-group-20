@@ -1,0 +1,7 @@
+let mutable x = 1;
+assert(x++ = 1);
+assert(x = 2);
+
+let mutable x = 5.2f;
+assert(x++ = 5.2f);
+assert(x = 6.2f)

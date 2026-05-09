@@ -1,0 +1,9 @@
+fun ninthFloat(
+    x1: float, x2: float, x3: float, x4: float,
+    x5: float, x6: float, x7: float, x8: float,
+    x9: float
+): float = {
+    x9
+};
+
+assert(ninthFloat(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f) = 9.0f)

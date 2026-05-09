@@ -1,0 +1,8 @@
+// ands truth table: true && true = true
+assert(if (true && true) then true else false);
+// ands truth table: true && false = false
+assert(if (true && false) then false else true);
+// ands truth table: false && true = false
+assert(if (false && true) then false else true);
+// ands truth table: false && false = false
+assert(if (false && false) then false else true)

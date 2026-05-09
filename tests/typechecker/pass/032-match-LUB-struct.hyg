@@ -1,0 +1,11 @@
+type U = union {
+  A: unit;
+  B: unit
+};
+
+let x: U = A{()};
+
+match x with {
+  A{_} -> struct { a = 1; b = true };
+  B{_} -> struct { a = 2 }
+}

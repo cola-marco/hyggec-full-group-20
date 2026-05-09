@@ -592,6 +592,36 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
         let rewritten = LetMut(name, init, ifNode)
         Some(env, {node with Expr = rewritten})
         
+    | IncDec(op, name) ->
+        match (env.Mutables.TryFind name) with
+        | Some(v) ->
+            match v.Expr with
+            | IntVal(v1) ->
+                let delta = 
+                    match op with
+                    | IncDecOp.PreInc | IncDecOp.PostInc -> 1
+                    | IncDecOp.PreDec | IncDecOp.PostDec -> -1
+                let newNode = {node with Expr = IntVal(v1 + delta)}
+                let env' = {env with Mutables = env.Mutables.Add(name, newNode)}
+                let returnNode =
+                    match op with
+                    | IncDecOp.PostInc | IncDecOp.PostDec -> {node with Expr = IntVal(v1)}
+                    | IncDecOp.PreInc  | IncDecOp.PreDec  -> {node with Expr = newNode.Expr}
+                Some(env', returnNode)
+            | FloatVal(v2) ->
+                let delta = 
+                    match op with
+                    | IncDecOp.PreInc | IncDecOp.PostInc -> 1.0f
+                    | IncDecOp.PreDec | IncDecOp.PostDec -> -1.0f
+                let newNode = {node with Expr = FloatVal(v2 + delta)}
+                let env' = {env with Mutables = env.Mutables.Add(name, newNode)}
+                let returnNode =
+                    match op with
+                    | IncDecOp.PostInc | IncDecOp.PostDec -> {node with Expr = FloatVal(v2)}
+                    | IncDecOp.PreInc  | IncDecOp.PreDec  -> {node with Expr = newNode.Expr}
+                Some(env', returnNode)
+            | _ -> None
+        | None -> None
 
     | Application(expr, args) ->
         match expr.Expr with
@@ -665,7 +695,8 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                 fields |> List.mapi (fun i _ -> env.Heap.[addr + uint i])
             let (heap': Heap<'E,'T>,baseAddr) = heapAlloc env.Heap fieldNodes
             let ptrInfo' = env.PtrInfo.Add(baseAddr, fields)
-            Some({env with Heap = heap'; PtrInfo = ptrInfo'}, {node with Expr = Pointer(baseAddr)})
+            Some({env with Heap = heap'; PtrInfo = ptrInfo'}, {node with Expr = Pointer(baseAddr)})        
+        | None -> failwith "Not Implemented"
 
     // Shallow Copy
     | Copy({Expr = StructCons(fields)}) ->
@@ -850,8 +881,10 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
         match reduceList env [target;index] with
         | Some(env', [target';index']) ->
             Some(env', {node with Expr = ArrayElem(target', index')})
-        | _ -> None
+        | _ -> None    
     
+    | Copy(arg) -> failwith "Not Implemented"
+    | DeepCopy(arg) -> failwith "Not Implemented"
 
 /// Attempt to reduce the given lhs, and then (if the lhs is a value) the rhs,
 /// using the given runtime environment.  Return None if either (a) the lhs
