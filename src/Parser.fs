@@ -301,6 +301,27 @@ let pVariable =
             mkNode (AST.Expr.Var name) tok.Begin tok.Begin tok.End
 
 
+/// Parse a pre increment/decrement expression
+let pIncDecExpr =
+    choice [
+        pToken INC ->>- pIdent 
+        |>> fun (tok, (tokVar, name)) ->
+            mkNode (AST.Expr.IncDec (AST.IncDecOp.PreInc, name)) tok.Begin tok.Begin tokVar.End
+
+        pToken DEC ->>- pIdent 
+        |>> fun (tok, (tokVar, name)) ->
+            mkNode (AST.Expr.IncDec (AST.IncDecOp.PreDec, name)) tok.Begin tok.Begin tokVar.End
+
+        pIdent ->>- pToken INC
+        |>> fun ((tokVar, name), tok) ->
+            mkNode (AST.Expr.IncDec (AST.IncDecOp.PostInc, name)) tokVar.Begin tokVar.Begin tok.End
+
+        pIdent ->>- pToken DEC
+        |>> fun ((tokVar, name), tok) ->
+            mkNode (AST.Expr.IncDec (AST.IncDecOp.PostDec, name)) tokVar.Begin tokVar.Begin tok.End
+    ]
+
+
 /// Parse a non-empty sequence of identifiers (representing struct fields) with
 /// initialized with simple expressions, separated by semicolons.
 let pFieldInitSeq =
@@ -455,6 +476,7 @@ let pPrimary = choice [
                     pToken LPAREN >>- pSimpleExpr ->> pToken RPAREN
                     pValue
                     pUnionCons // IMPORTANT: try parsing this before 'pVariable'
+                    pIncDecExpr
                     pVariable
                     pStructCons
                     pCopy

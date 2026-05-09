@@ -1,0 +1,8 @@
+let mutable x = 2;
+assert(++x = 3);
+
+let mutable y = 2.1f;
+assert(++y = 3.1f);
+
+assert(x = 3);
+assert(y = 3.1f)

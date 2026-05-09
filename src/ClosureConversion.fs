@@ -962,7 +962,8 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                 )
             TypeDefs = nameResult.TypeDefs
             ConvertedType = node.Type
-        }
+        }    
+    | IncDec(op, name) -> failwith "Not Implemented"
 
 /// Entry helper for closure conversion.
 /// Converts a typed AST into an untyped closure-converted AST and wraps the

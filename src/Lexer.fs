@@ -90,6 +90,10 @@ type Token =
     | DO
     /// Keyword 'for'
     | FOR
+    /// Pre-PostInc symbol.
+    | INC
+    /// Pre-PostDec symbol.
+    | DEC
     /// Keyword 'fun'.
     | FUN
     /// Keyword 'struct'.
@@ -187,6 +191,8 @@ let rec internal tokenizeRec (input: string) (pos: Position)
     | Symbol ")"  RPAREN   pos (accepted, pos')
     | Symbol "{"  LCURLY   pos (accepted, pos')
     | Symbol "}"  RCURLY   pos (accepted, pos')
+    | Symbol "++" INC      pos (accepted, pos')
+    | Symbol "--" DEC      pos (accepted, pos')
     | Symbol "+"  PLUS     pos (accepted, pos')
     | Symbol "-"  MINUS    pos (accepted, pos')
     | Symbol "*"  TIMES    pos (accepted, pos')
