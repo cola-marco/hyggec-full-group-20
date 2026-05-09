@@ -208,6 +208,12 @@ let rec internal formatASTRec (node: AST.Node<'E,'T>): Tree =
         ]
     | ArrayLength(arr) ->
         mkTree "ArrayLength" node ["name", formatASTRec arr]
+    | Slice(baseArray, lo, hi) ->
+        mkTree "Slice" node [
+            ("of array", formatASTRec baseArray)
+            ("from index", formatASTRec lo)
+            ("to index", formatASTRec hi)
+        ]
     | Match(expr, cases) ->
         let casesChildren =
             List.map (fun (l, v, cont) -> ($"case %s{l}{{%s{v}}}",

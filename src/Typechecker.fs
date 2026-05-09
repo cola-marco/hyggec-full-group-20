@@ -204,6 +204,9 @@ let rec isSubtypeOf (env: TypingEnv) (t1: Type) (t2: Type): bool =
             let map1 = Map.ofList cases1
             let map2 = Map.ofList cases2
             List.forall (fun l -> isSubtypeOf env map1.[l] map2.[l]) labels1
+    | (t2, TArray(t1)) when t1 = t2 -> true
+    | (TArray(t1), t2) when t1 = t2 -> true
+    | (TArray(t1), TArray(t2)) when t1 = t2 -> true
     | (_, _) -> false
 
 
@@ -474,10 +477,14 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
                 else
                     Error([(node.Pos,
                             $"assignment to non-mutable variable %s{name}")])
-            | FieldSelect(_, _)
-            | ArrayElem(_, _) ->
+            | FieldSelect(_, _)  ->
                 Ok { Pos = node.Pos; Env = env; Type = ttarget.Type;
                      Expr = Assign(ttarget, texpr) }
+            | ArrayElem(_,index) ->
+                if (isSubtypeOf env index.Type TInt) then 
+                    Ok { Pos = node.Pos; Env = env; Type = ttarget.Type;
+                        Expr = Assign(ttarget, texpr) }
+                else Error([(node.Pos, "invalid index expression type")])
             | _ -> Error([(node.Pos, "invalid assignment target")])
         | (Ok(ttarget), Ok(texpr)) ->
             Error([(texpr.Pos,
@@ -783,9 +790,26 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
                     if not (isSubtypeOf env tindex.Type TInt) then
                         Error([(index.Pos, $"array index must be integer, found %O{tindex.Type}")])
                     else
-                        Ok { Pos = node.Pos; Env = env; Type = elemType; Expr = ArrayElem(tarray, tindex) }
+                        Ok { Pos = node.Pos; Env = env; Type = TArray(elemType); Expr = ArrayElem(tarray, tindex) }
                 | _ -> Error([(array.Pos, $"expected array type, found %O{tarray.Type}")])
             | _ -> Error([(array.Pos, "arrayElem expects an array variable")])
+    | Slice(baseArray, lo, hi) ->
+        let baseArrayTyping = typer env baseArray
+        let loTyping = typer env lo 
+        let hiTyping = typer env hi 
+        let errs = collectErrors [baseArrayTyping;loTyping;hiTyping]
+        if not errs.IsEmpty then Error(errs)
+        else 
+            let tbaseArray = getOkValue baseArrayTyping
+            let tlo = getOkValue loTyping 
+            let thi = getOkValue hiTyping 
+            match tbaseArray.Expr with
+            | Var(_) ->
+                match (expandType env tbaseArray.Type) with
+                | TArray(elemType) when (isSubtypeOf env tlo.Type TInt) && (isSubtypeOf env thi.Type TInt) ->
+                    Ok { Pos = node.Pos; Env = env; Type = TArray(elemType); Expr = Slice(tbaseArray, tlo, thi) }
+                | _ -> Error([(baseArray.Pos, $"expected array type, found %O{tbaseArray.Type}")])
+            | _ -> Error([(baseArray.Pos, "Slice expects an array variable and integer indeces")])
 
 
 /// Compute the typing of a binary numerical operation, by computing and

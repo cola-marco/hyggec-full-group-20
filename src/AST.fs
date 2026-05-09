@@ -276,9 +276,17 @@ and Expr<'E,'T> =
     | ArrayElem of name: Node<'E,'T>
                  * index: Node<'E,'T>
 
-    /// Array element accessor. 
-    /// Takes the identifier of the array and the index of the element to be accessed
+    /// Array length getter
+    /// Takes the identifier of the array
     | ArrayLength of name: Node<'E,'T>
+
+    /// Slice expression
+    /// Takes array to slice, lo and hi indeces
+    | Slice of baseArray: Node<'E, 'T>
+             * lo: Node<'E, 'T>
+             * hi: Node<'E, 'T>
+
+
 
 
 /// A type alias for an untyped AST, where there is no typing environment nor

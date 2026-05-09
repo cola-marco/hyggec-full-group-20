@@ -16,6 +16,7 @@ let rec isValue (node: Node<'E,'T>): bool =
     | BoolVal(_)
     | IntVal(_)
     | FloatVal(_)
+    //| Slice(_)
     | StringVal(_) -> true
     | Lambda(_, _) -> true
     | Pointer(_) -> true
@@ -481,10 +482,43 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
             Some(env', {node with Expr = Assign({node with Expr = ArrayElem(arr, idx)}, expr')})
         | None -> None
     | Assign({Expr = ArrayElem({Expr = Pointer(addr)}, {Expr = IntVal(i)})}, value) ->
-        match env.Heap.TryFind addr with
-        | Some({Expr = IntVal(len)}) when i >= 0 && i < len ->
-            let env' = {env with Heap = env.Heap.Add(addr + 1u + uint i, value)}
-            Some(env', {node with Expr = value.Expr})
+        match (env.PtrInfo.TryFind addr) with
+        | Some(fields) ->
+
+            // Check that it is a slice pointer
+            match (List.tryFind (fun f -> f = "__slice_baseAddr") fields) with
+            | Some(_) ->
+
+                let baseAddr = env.Heap[addr]
+                let hi = env.Heap[addr + uint 2]
+                let lo = env.Heap[addr + uint 1]
+                match (baseAddr.Expr, hi.Expr, lo.Expr) with 
+                    | (Pointer baseAddr', IntVal hi', IntVal lo') ->
+
+                        let actualIndex = i + lo'
+                        match env.Heap.TryFind (baseAddr') with
+                        | Some(node) when actualIndex >= lo' && actualIndex <= hi' ->
+                            
+                            let env' = {env with Heap = env.Heap.Add(baseAddr' + 1u + uint actualIndex, value)}
+                            Some(env', {node with Expr = value.Expr})
+                        | _ -> None //no such array, not a slice or out of bounds
+                    | _ -> None
+            | None -> None
+        | None -> 
+            match env.Heap.TryFind addr with
+            | Some({Expr = IntVal(len)}) when i >= 0 && i < len ->
+                let env' = {env with Heap = env.Heap.Add(addr + 1u + uint i, value)}
+                Some(env', {node with Expr = value.Expr})
+            | _ -> None  // Out of bounds or not an array
+    | Assign({Expr = ArrayElem({Expr = Slice(array, lo, hi)}, {Expr = IntVal(requestIndex)})}, value) ->
+        match (array.Expr, lo.Expr, hi.Expr) with
+        | (Pointer addr, IntVal lo', IntVal hi') ->
+            let actualIndex = requestIndex + lo'
+            match env.Heap.TryFind addr with
+            | Some({Expr = IntVal(len)}) when actualIndex >= 0 && actualIndex <= len ->
+                let env' = {env with Heap = env.Heap.Add(addr + 1u + uint actualIndex, value)}
+                Some(env', {node with Expr = value.Expr})
+            | _ -> None  // Not an array or corrupted heap
         | _ -> None  // Out of bounds or not an array
 
     | Assign({Expr = FieldSelect(selTarget, field)} as target,
@@ -583,38 +617,7 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                         let body2 = List.fold folder body lamArgNamesValues
                         Some(env, {node with Expr = body2.Expr})
                     else None
-        | Var(name) when name = "arrayLength" ->
-            // Builtin: arrayLength(arr)
-            if args.Length <> 1 then None
-            else
-                match (reduce env args[0]) with
-                | Some(env', arg') -> Some(env', {node with Expr = Application(expr, [arg'])})
-                | None ->
-                    if isValue args[0] then
-                        match args[0].Expr with
-                        | Pointer(addr) ->
-                            match env.Heap.TryFind addr with
-                            | Some({Expr = IntVal(len)}) -> Some(env, {node with Expr = IntVal(len)})
-                            | _ -> None  // Not an array or corrupted heap
-                        | _ -> None  // Not a pointer
-                    else None
-        | Var(name) when name = "arrayElem" ->
-            // Builtin: arrayElem(arr, index)
-            if args.Length <> 2 then None
-            else
-                match (reduceLhsRhs env args[0] args[1]) with
-                | Some(env', arg0', arg1') ->
-                    Some(env', {node with Expr = Application(expr, [arg0'; arg1'])})
-                | None ->
-                    if isValue args[0] && isValue args[1] then
-                        match args[0].Expr, args[1].Expr with
-                        | Pointer(addr), IntVal(i) ->
-                            match env.Heap.TryFind addr with
-                            | Some({Expr = IntVal(len)}) when i >= 0 && i < len ->
-                                Some(env, env.Heap[addr + 1u + uint i])
-                            | _ -> None  // Out of bounds or not an array
-                        | _ -> None  // Invalid types
-                    else None
+        
         | _ ->
             match (reduce env expr) with
             | Some(env', expr') -> Some(env', {node with Expr = Application(expr', args)})
@@ -752,18 +755,56 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                     Some({env with Heap = heap'}, {node with Expr = Pointer(baseAddr)})
                 | _ -> None  // Invalid size (not a positive integer)
             else None
-
+    | Slice(baseArray, lo, hi) ->
+        let sliceArgs = [baseArray;lo;hi]
+        match (reduceList env sliceArgs) with
+            | Some(env', [array';lo';hi']) ->
+                Some(env', {node with Expr = Slice(array', lo', hi')})
+            // once everything is reduced, just check that array is valid pointer and indeces are within bounds
+            | None ->
+                // save baseaddr + lo + hi values on heap
+                // return pointer to slice on the heap
+                if (List.forall isValue sliceArgs) then
+                    match (baseArray.Expr, lo.Expr, hi.Expr) with
+                    | (Pointer(baseAddr), IntVal loVal, IntVal hiVal) -> //when loVal >= 0 && hiVal <= int baseAddr ->
+                        match (env.Heap.TryFind baseAddr) with 
+                        | Some(length) ->
+                            match length.Expr with
+                            | IntVal length' ->
+                                let (heap', sliceAddr) = heapAlloc env.Heap sliceArgs
+                                /// Updated pointer info, mapping 'sliceAddr' -> 'baseAddr' 'lo' 'hi' 
+                                let ptrInfo' = env.PtrInfo.Add(sliceAddr, ["__slice_baseAddr";"__slice_lo";"__slice_hi"])
+                                Some({env with Heap = heap'; PtrInfo = ptrInfo'},
+                                    {node with Expr = Pointer(sliceAddr)})
+                            | _ -> None
+                        | _ -> None
+                    | _ -> None  // Invalid name or inde(x/ces)
+                else None
+            | _ -> None //<- should not happen
+    | ArrayLength(name) when not (isValue name) ->
+        match (reduce env name) with
+        | Some(env', name') -> 
+            Some(env', {node with Expr = ArrayLength(name')})
+        | None -> None
     | ArrayLength(name) ->
-        if not (isValue name) then
-            match (reduce env name) with
-            | Some(env', name') -> Some(env', {node with Expr = ArrayLength(name')})
-            | None -> None
-        else
-            match name.Expr with
+        match name.Expr with
             | Pointer(addr) ->
-                match env.Heap.TryFind addr with
-                | Some({Expr = IntVal(len)}) -> Some(env, {node with Expr = IntVal(len)})
-                | _ -> None  // Not an array or corrupted heap
+                match (env.PtrInfo.TryFind addr) with
+                | Some(fields) ->
+                    // Check that it is a slice pointer
+                    match (List.tryFind (fun f -> f = "__slice_baseAddr") fields) with
+                    | Some(_) ->
+                        let hi = env.Heap[addr + uint 2]
+                        let lo = env.Heap[addr + uint 1]
+                        match (hi.Expr, lo.Expr) with 
+                            | (IntVal hi', IntVal lo') ->
+                                Some(env, {node with Expr = IntVal (hi' - lo' + 1)})
+                            | _ -> None
+                    | None -> None
+                | None -> 
+                    match env.Heap.TryFind addr with
+                    | Some({Expr = IntVal(len)}) -> Some(env, {node with Expr = IntVal(len)})
+                    | _ -> None  // Not an array or corrupted heap
             | Var(vname) ->
                 match env.Mutables.TryFind vname with
                 | Some({Expr = Pointer(addr)}) ->
@@ -772,21 +813,45 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                     | _ -> None  // Not an array or corrupted heap
                 | _ -> None  // Variable not bound to a pointer
             | _ -> None  // Name not a variable or pointer
-
-    | ArrayElem(name, index) ->
-        match (reduceLhsRhs env name index) with
-        | Some(env', name', index') ->
-            Some(env', {node with Expr = ArrayElem(name', index')})
-        | None ->
-            if isValue name && isValue index then
-                match name.Expr, index.Expr with
-                | Pointer(addr), IntVal(i) ->
-                    match env.Heap.TryFind addr with
-                    | Some({Expr = IntVal(len)}) when i >= 0 && i < len ->
-                        Some(env, env.Heap[addr + 1u + uint i])
-                    | _ -> None  // Out of bounds or not an array
-                | _ -> None  // Invalid name or index
-            else None
+            
+    | ArrayElem({Expr = Slice(array, lo, hi)}, {Expr = IntVal index}) -> //TODO remove/rewrite
+        match (array.Expr, lo.Expr, hi.Expr) with
+            | (Pointer addr, IntVal lo', IntVal hi') ->
+                let actualIndex = index + lo'
+                match env.Heap.TryFind addr with
+                | Some({Expr = IntVal(len)}) when actualIndex >= 0 && actualIndex <= len ->
+                    Some(env, env.Heap[addr + 1u + uint actualIndex])
+                | _ -> None  // Not an array or corrupted heap
+            | _ -> None
+    | ArrayElem({Expr = Pointer(addr)}, {Expr = IntVal index}) ->
+        match (env.PtrInfo.TryFind addr) with
+        | Some(fields) ->
+            // Check that it is a slice pointer
+            match (List.tryFind (fun f -> f = "__slice_baseAddr") fields) with
+            | Some(_) ->
+                let baseAddr = env.Heap[addr]
+                let hi = env.Heap[addr + uint 2]
+                let lo = env.Heap[addr + uint 1]
+                match (baseAddr.Expr, hi.Expr, lo.Expr) with 
+                    | (Pointer baseAddr', IntVal hi', IntVal lo') ->
+                        let actualIndex = index + lo'
+                        match env.Heap.TryFind (baseAddr') with
+                        | Some(node) when actualIndex >= lo' && actualIndex <= hi' ->
+                            Some(env, env.Heap[baseAddr' + 1u + uint actualIndex])
+                        | _ -> None //no such array, not a slice or out of bounds
+                    | _ -> None
+            | None -> None
+        | None -> 
+            match env.Heap.TryFind addr with
+                | Some({Expr = IntVal(len)}) when index >= 0 && index < len ->
+                    Some(env, env.Heap[addr + 1u + uint index])
+                | _ -> None  // Out of bounds or not an array
+    | ArrayElem(target, index) ->
+        match reduceList env [target;index] with
+        | Some(env', [target';index']) ->
+            Some(env', {node with Expr = ArrayElem(target', index')})
+        | _ -> None
+    
 
 /// Attempt to reduce the given lhs, and then (if the lhs is a value) the rhs,
 /// using the given runtime environment.  Return None if either (a) the lhs

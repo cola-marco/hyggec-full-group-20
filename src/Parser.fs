@@ -367,87 +367,12 @@ let pArrayLength =
         |>> fun ((tok1, name), tok2) ->
             mkNode (AST.Expr.ArrayLength name) tok1.Begin tok1.Begin tok2.End
 
+/// Parse a slice expression
 let pSlice =
     pToken SLICE ->>- (pToken LPAREN >>- pSimpleExpr) ->>- (pToken COMMA >>- pSimpleExpr) ->>- (pToken COMMA >>- pSimpleExpr ->>- pToken RPAREN)
-        |>> fun (((tokSlice, arrayExpr), loExpr), (hiExpr, tokR)) ->
-            let loopVarName = "__slice_i"
-
-            let sizeWithoutOffset =
-                mkNode (AST.Expr.BinNumOp (AST.NumericalOp.Sub, hiExpr, loExpr))
-                       loExpr.Pos.Begin loExpr.Pos.Begin hiExpr.Pos.End
-
-            let sizeExpr =
-                mkNode (AST.Expr.BinNumOp (AST.NumericalOp.Add,
-                                            sizeWithoutOffset,
-                                            mkNode (AST.Expr.IntVal 1) loExpr.Pos.Begin loExpr.Pos.Begin loExpr.Pos.Begin))
-                       tokSlice.Begin sizeWithoutOffset.Pos.Begin tokR.End
-
-            let arrayInit =
-                mkNode (AST.Expr.ArrayElem (arrayExpr, loExpr))
-                       tokSlice.Begin arrayExpr.Pos.Begin loExpr.Pos.End
-
-            let arrayCons =
-                mkNode (AST.Expr.ArrayCons (sizeExpr, arrayInit))
-                       tokSlice.Begin tokSlice.Begin tokR.End
-
-            let resultArrayVarName = "__slice_array"
-            let resultArrayVar =
-                mkNode (AST.Expr.Var resultArrayVarName)
-                       tokSlice.Begin tokSlice.Begin tokR.End
-
-            let loopIndexVar =
-                mkNode (AST.Expr.Var loopVarName)
-                       tokSlice.Begin tokSlice.Begin tokR.End
-
-            let stepExpr =
-                let increment =
-                    mkNode (AST.Expr.BinNumOp (AST.NumericalOp.Add,
-                                                loopIndexVar,
-                                                mkNode (AST.Expr.IntVal 1) tokSlice.Begin tokSlice.Begin tokSlice.Begin))
-                           tokSlice.Begin loopIndexVar.Pos.Begin tokR.End
-                mkNode (AST.Expr.Assign (loopIndexVar, increment))
-                       tokSlice.Begin loopIndexVar.Pos.Begin increment.Pos.End
-
-            let condExpr =
-                mkNode (AST.Expr.BinRelOp (AST.RelationalOp.Less, loopIndexVar, sizeExpr))
-                       tokSlice.Begin loopIndexVar.Pos.Begin sizeExpr.Pos.End
-
-            let srcIndex =
-                mkNode (AST.Expr.BinNumOp (AST.NumericalOp.Add,
-                                            loExpr,
-                                            loopIndexVar))
-                       loExpr.Pos.Begin loExpr.Pos.Begin tokR.End
-
-            let readElem =
-                mkNode (AST.Expr.ArrayElem (arrayExpr, srcIndex))
-                       tokSlice.Begin arrayExpr.Pos.Begin srcIndex.Pos.End
-
-            let writeElemIndex =
-                mkNode (AST.Expr.Var loopVarName)
-                       tokSlice.Begin tokSlice.Begin tokR.End
-
-            let writeElem =
-                mkNode (AST.Expr.ArrayElem (resultArrayVar, writeElemIndex))
-                       tokSlice.Begin resultArrayVar.Pos.Begin writeElemIndex.Pos.End
-
-            let bodyExpr =
-                mkNode (AST.Expr.Assign (writeElem, readElem))
-                       tokSlice.Begin writeElem.Pos.Begin readElem.Pos.End
-
-            let forExpr =
-                mkNode (AST.Expr.For (loopVarName,
-                                      mkNode (AST.Expr.IntVal 0) tokSlice.Begin tokSlice.Begin tokSlice.Begin,
-                                      condExpr,
-                                      stepExpr,
-                                      bodyExpr))
-                       tokSlice.Begin tokSlice.Begin tokR.End
-
-            let seqExpr =
-                mkNode (AST.Expr.Seq [forExpr; resultArrayVar])
-                       tokSlice.Begin tokSlice.Begin tokR.End
-
-            mkNode (AST.Expr.Let (resultArrayVarName, arrayCons, seqExpr))
-                   tokSlice.Begin tokSlice.Begin tokR.End
+        |>> fun (((tokSlice, arrayExpr), loExpr), (hiExpr, tok2)) ->
+            mkNode (AST.Expr.Slice (arrayExpr, loExpr, hiExpr))
+                   tokSlice.Begin tokSlice.Begin tok2.End
 
 
 /// Parse a primary expression.

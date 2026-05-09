@@ -154,6 +154,12 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
         let substArr= subst arr var sub
         let substIndex= subst index var sub
         {node with Expr = ArrayElem(substArr, substIndex)}
+    
+    | Slice(arr, lo, hi) ->
+        let substArr = subst arr var sub 
+        let substLo = subst lo var sub 
+        let substHi = subst hi var sub
+        {node with Expr = Slice(substArr, substLo, substHi)}
 
 /// Compute the set of free variables in the given AST node.
 let rec freeVars (node: Node<'E,'T>): Set<string> =

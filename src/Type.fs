@@ -31,6 +31,7 @@ type Type =
     /// Discriminated union type.  Each case consists of a label and a type.
     | TUnion of cases: List<string * Type>
     | TArray of init: Type
+    | TSlice of address: int * tpe: Type
 
     /// Returns a human-readable string describing the type.
     override this.ToString(): string =
