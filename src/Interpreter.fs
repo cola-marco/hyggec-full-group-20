@@ -692,7 +692,8 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                 fields |> List.mapi (fun i _ -> env.Heap.[addr + uint i])
             let (heap': Heap<'E,'T>,baseAddr) = heapAlloc env.Heap fieldNodes
             let ptrInfo' = env.PtrInfo.Add(baseAddr, fields)
-            Some({env with Heap = heap'; PtrInfo = ptrInfo'}, {node with Expr = Pointer(baseAddr)})
+            Some({env with Heap = heap'; PtrInfo = ptrInfo'}, {node with Expr = Pointer(baseAddr)})        
+        | None -> failwith "Not Implemented"
 
     // Shallow Copy
     | Copy({Expr = StructCons(fields)}) ->
@@ -816,7 +817,9 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                         Some(env, env.Heap[addr + 1u + uint i])
                     | _ -> None  // Out of bounds or not an array
                 | _ -> None  // Invalid name or index
-            else None
+            else None    
+    | Copy(arg) -> failwith "Not Implemented"
+    | DeepCopy(arg) -> failwith "Not Implemented"
 
 /// Attempt to reduce the given lhs, and then (if the lhs is a value) the rhs,
 /// using the given runtime environment.  Return None if either (a) the lhs

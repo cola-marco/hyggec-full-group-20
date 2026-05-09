@@ -239,7 +239,9 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
             | LogicOp.Or ->
                 Asm(RV.OR(Reg.r(env.Target), Reg.r(env.Target), Reg.r(rtarget)))
             | LogicOp.Xor ->
-                Asm(RV.XOR(Reg.r(env.Target), Reg.r(env.Target), Reg.r(rtarget)))
+                Asm(RV.XOR(Reg.r(env.Target), Reg.r(env.Target), Reg.r(rtarget)))            
+            | LogicOp.AndS -> failwith "Not Implemented"
+            | LogicOp.OrS -> failwith "Not Implemented"
         // Put everything together
         lAsm ++ rAsm ++ opAsm
 
@@ -611,7 +613,8 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
                                           (RV.SW(Reg.r(env.Target), Imm12(0),
                                                  Reg.r(env.Target + 1u)),
                                            $"Transfer value of '%s{name}' to memory") ])
-                | None -> failwith $"BUG: variable without storage: %s{name}"
+                | None -> failwith $"BUG: variable without storage: %s{name}"                
+                | Some(value) -> failwith "Not Implemented"
         | FieldSelect(target, field) ->
             /// Assembly code for computing the 'target' object of which we are
             /// selecting the 'field'.  We write the computation result (which
@@ -830,7 +833,8 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
                     if not isPost then
                         (RV.FMV_S(FPReg.r(env.FPTarget), FPReg.r(env.FPTarget + 1u)),    "Move result to target fp register") ])
             | t -> failwith $"BUG: IncDec on invalid type %O{t}"
-        | None -> failwith $"BUG: variable without storage: %s{name}"
+        | None -> failwith $"BUG: variable without storage: %s{name}"        
+        | Some(value) -> failwith "Not Implemented"
 
 
     | Lambda(args, body) ->
@@ -1308,7 +1312,9 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
 
             doCodegen env lowered
         | (t: Type) ->
-            failwith $"BUG: deepcopy codegen on invalid target type: %O{t}"
+            failwith $"BUG: deepcopy codegen on invalid target type: %O{t}"    
+    | UnionCons(label, expr) -> failwith "Not Implemented"
+    | Match(expr, cases) -> failwith "Not Implemented"
 
 /// Escape a string so it can be shown inside the compile-time rendering of a
 /// failed assertion expression.
@@ -1405,7 +1411,8 @@ and internal formatAssertionExpr (node: TypedAST): string =
         $"deepcopy(%s{formatAssertionExpr target})"
     | Pointer(addr) -> $"<pointer 0x%x{addr}>"
     | UnionCons(label, expr) -> $"%s{label}(%s{formatAssertionExpr expr})"
-    | Match(expr, _) -> $"match %s{formatAssertionExpr expr} with ..."
+    | Match(expr, _) -> $"match %s{formatAssertionExpr expr} with ..."    
+    | IncDec(op, name) -> $"{op}({name})"
 
 /// Generate code that prints a fixed string through the RARS PrintString
 /// syscall.  The string is allocated in the data segment.
@@ -1543,7 +1550,8 @@ and internal codegenAssertionValue (env: CodegenEnv) (typeEnv: TypingEnv) (name:
                         ++ (afterSysCall [Reg.a0] [FPReg.fa0])
                 | Some(Storage.Reg(_)) as st ->
                     failwith $"BUG: float variable %s{name} has unexpected storage %O{st}"
-                | None -> printStringLiteral "<not stored>"
+                | None -> printStringLiteral "<not stored>"                
+                | Some(value) -> failwith "Not Implemented"
             | t ->
                 match env.VarStorage.TryFind name with
                 | Some(Storage.Reg(reg)) -> printValueReg typeEnv reg t assertStructPrintDepth
@@ -1560,7 +1568,8 @@ and internal codegenAssertionValue (env: CodegenEnv) (typeEnv: TypingEnv) (name:
                         ++ (printValueReg typeEnv scratch t assertStructPrintDepth)
                 | Some(Storage.FPReg(_)) as st ->
                     failwith $"BUG: non-float variable %s{name} has unexpected storage %O{st}"
-                | None -> printStringLiteral "<not stored>"
+                | None -> printStringLiteral "<not stored>"                
+                | Some(value) -> failwith "Not Implemented"
         header
         ++ (saveRegisters [Reg.t(5u); Reg.t(6u)] [])
         ++ valueCode

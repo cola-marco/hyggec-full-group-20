@@ -146,8 +146,8 @@ let rec substVar (node: Node<'E,'T>) (var: string) (var2: string): Node<'E,'T> =
             if (v = var) then (lab, v, cont) // Variable bound, no substitution
             else (lab, v, (substVar cont var var2))
         let cases2 = List.map substCase cases
-        {node with Expr = Match((substVar expr var var2), cases2)}
-
+        {node with Expr = Match((substVar expr var var2), cases2)}    
+    | IncDec(op, name) -> failwith "Not Implemented"
 
 /// Convert a given AST node (expected to contain a variable) and a list of ANF
 /// definitions (with the most recent at the head of the list) into a

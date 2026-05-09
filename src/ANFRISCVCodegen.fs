@@ -419,7 +419,7 @@ and internal doLetInitCodegen (env: ANFCodegenEnv) (init: TypedAST): ANFCodegenR
                         $"%s{env.TargetVar} <- %s{lrVarNames.[0]} + %s{lrVarNames.[1]}")
                 | NumericalOp.Mult ->
                     Asm(RV.MUL(targetReg, lhsReg, rhsReg),
-                        $"%s{env.TargetVar} <- %s{lrVarNames.[0]} * %s{lrVarNames.[1]}")
+                        $"%s{env.TargetVar} <- %s{lrVarNames.[0]} * %s{lrVarNames.[1]}")       
             { Asm = argLoadRes.Asm ++ targetLoadRes.Asm ++ opAsm
               Env = targetLoadRes.Env }
         | x ->
@@ -437,7 +437,7 @@ and internal doLetInitCodegen (env: ANFCodegenEnv) (init: TypedAST): ANFCodegenR
             /// relational operation we are compiling
             let labelName = match op with
                             | RelationalOp.Eq -> "eq"
-                            | RelationalOp.Less -> "less"
+                            | RelationalOp.Less -> "less"                            
             /// Label to jump to when the comparison is true
             let trueLabel = Util.genSymbol $"%O{labelName}_true"
             /// Label to mark the end of the comparison code
@@ -449,8 +449,7 @@ and internal doLetInitCodegen (env: ANFCodegenEnv) (init: TypedAST): ANFCodegenR
                 | RelationalOp.Eq ->
                     Asm(RV.BEQ(lhsReg, rhsReg, trueLabel))
                 | RelationalOp.Less ->
-                    Asm(RV.BLT(lhsReg, rhsReg, trueLabel))
-
+                    Asm(RV.BLT(lhsReg, rhsReg, trueLabel))                
             /// Generated code where we put everything
             let asm = (argLoadRes.Asm ++ targetLoadRes.Asm ++ opAsm)
                         .AddText([
