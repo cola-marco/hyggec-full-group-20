@@ -1,0 +1,14 @@
+let n = readInt();
+let arr: array {string} = array(n, "cool");
+
+let mutable i = 0;
+while (i < arrayLength(arr)) do {
+    arrayElem(arr, i) <- "cooler";
+    i <- i + 1
+};
+
+i <- 0;
+while (i < arrayLength(arr)) do {
+    println(arrayElem(arr, i));
+    i <- i + 1
+}

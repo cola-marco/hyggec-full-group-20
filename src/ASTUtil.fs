@@ -122,6 +122,12 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
         let substInitNodes = List.map (fun e -> (subst e var sub)) initNodes
         {node with Expr = StructCons(List.zip fieldNames substInitNodes)}
 
+    | Copy(source) ->
+        { node with Expr = Copy(subst source var sub) }
+        
+    | DeepCopy(source) ->
+        { node with Expr = DeepCopy(subst source var sub) }
+
     | FieldSelect(target, field) ->
         {node with Expr = FieldSelect((subst target var sub), field)}
 
@@ -134,6 +140,20 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
             else (lab, v, (subst cont var sub))
         let cases2 = List.map substCase cases
         {node with Expr = Match((subst expr var sub), cases2)}
+
+    | ArrayCons(size, init) ->
+        let substSize = subst size var sub
+        let substInit = subst init var sub
+        {node with Expr = ArrayCons(substSize, substInit)}
+    
+    | ArrayLength(arr) ->
+        let substArr= subst arr var sub
+        {node with Expr = ArrayLength(substArr)}
+
+    | ArrayElem(arr, index) ->
+        let substArr= subst arr var sub
+        let substIndex= subst index var sub
+        {node with Expr = ArrayElem(substArr, substIndex)}
 
 /// Compute the set of free variables in the given AST node.
 let rec freeVars (node: Node<'E,'T>): Set<string> =
@@ -201,6 +221,12 @@ let rec freeVars (node: Node<'E,'T>): Set<string> =
         /// Free variables in all match continuations
         let fvConts = List.fold folder Set[] cases
         Set.union (freeVars expr) fvConts    
+    | ArrayCons(size, init) -> 
+        Set.union (freeVars size) (freeVars init)
+    | ArrayLength(arr) -> 
+        freeVars arr
+    | ArrayElem(arr, index) -> 
+        Set.union (freeVars arr) (freeVars index)
     | IncDec(op, name) -> Set[name]
 
 /// Compute the union of the free variables in a list of AST nodes.

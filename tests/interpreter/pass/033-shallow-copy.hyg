@@ -1,0 +1,11 @@
+let inner = struct {f = 1};
+let x = struct {a = inner; b = 0};
+let y = copy(x);
+
+y.b <- 1;
+assert(y.b = 1);
+assert(x.b = 0);
+
+y.a.f <- 2;
+assert(y.a.f = 2);
+assert(x.a.f = 2)
