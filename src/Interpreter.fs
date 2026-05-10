@@ -402,31 +402,20 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
             Some(env, {node with Expr = (ASTUtil.subst scope name init).Expr})
         | None -> None
     | LetRec(name, tpe, init, scope) ->
-        // Recursive bindings are handled by keeping the function value in the
-        // interpreter environment, so recursive calls to the function name
-        // reduce to the function value and can be applied normally.
         match (reduce env init) with
         | Some(env', init') ->
             Some(env', {node with Expr = LetRec(name, tpe, init', scope)})
         | None when (isValue init) ->
-            // Create v' by substituting occurrences of 'name' in 'init' with
-            // the recursive definition itself: 'let rec name = init'
             let letRecDef = {node with Expr = LetRec(name, tpe, init, {node with Expr = Var(name)})}
             let init' = ASTUtil.subst init name letRecDef
-            // Now substitute 'name' in the scope with v'
-            match (reduce env scope) with
-            | Some(env'', scope') ->
-                // Keep the function in the environment as we continue reducing the scope.
-                // The binding is restored when the scope becomes a value.
-                Some(env'', {node with Expr = (ASTUtil.subst scope name init').Expr})
+            let scope' = ASTUtil.subst scope name init'
+            match (reduce env scope') with
+            | Some(env'', scope'') ->
+                Some(env'', scope'')    
+            | None when (isValue scope') ->
+                Some(env, scope')
             | None ->
-                // Scope is fully reduced (a value). Remove the function from the environment.
-                if isValue scope then
-                    Some(env, scope)
-                else
-                    // Scope is stuck; entire LetRec is stuck, likely a hyggec programming error (no stop condition, or cannot reach stop condition)
-                    None
-        | None -> None
+                None   
 
     | LetMut(_, _, scope) when (isValue scope) ->
         Some(env, {node with Expr = scope.Expr})
