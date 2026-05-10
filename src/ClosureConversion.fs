@@ -923,18 +923,27 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                     node.Type        }
 
     | Type(name, def, scope) ->
-        let scopeResult = convertExpr scope
+        let scopeResult =
+            convertExpr scope
+
+        let wrappedScope =
+            wrapTypeDefs node.Pos scopeResult.TypeDefs scopeResult.Expr
+
         {
             Expr = mkLike node 
                 (
                     Type(
                         name, 
                         def, 
-                        scopeResult.Expr
+                        wrappedScope
                     )
                 )
-            TypeDefs = scopeResult.TypeDefs
-            ConvertedType = scopeResult.ConvertedType
+
+            TypeDefs =
+                []
+
+            ConvertedType =
+                scopeResult.ConvertedType
         }
 
     | Ascription(tpe, inner) ->
@@ -1024,18 +1033,21 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
             convertExpr init
 
         let scopeResult =
-                withConvertedVarType name initResult.ConvertedType
-                    (
-                        fun () ->
-                            convertExpr scope
-                    )
+            withConvertedVarType name initResult.ConvertedType
+                (
+                    fun () ->
+                        convertExpr scope
+                )
+
+        let convertedAnnotation =
+            typeToPretype node.Pos initResult.ConvertedType
 
         {
             Expr = mkLike node 
                 (
                     LetT(
                         name, 
-                        tpe, 
+                        convertedAnnotation, 
                         initResult.Expr,
                         scopeResult.Expr
                     )
@@ -1047,7 +1059,6 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
             ConvertedType =
                 scopeResult.ConvertedType
         }
-
     | LetMut(name, init, scope) ->
         let initResult =
             convertExpr init
