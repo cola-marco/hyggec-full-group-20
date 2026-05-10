@@ -456,6 +456,62 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                 Some(env''', {node with Expr = LetMut(name, init', scope')})
             | None -> None
         | None -> None
+    
+    | Assign({Expr = Application(appExpr, appArgs)} as target, expr) when appExpr.Expr = Var "arrayElem" && appArgs.Length = 2 ->
+        // Handle arrayElem(arr, idx) = value
+        let arr = appArgs[0]
+        let idx = appArgs[1]
+        if not (isValue arr) then
+            match (reduce env arr) with
+            | Some(env', arr') ->
+                let target' = {target with Expr = Application(appExpr, [arr'; idx])}
+                Some(env', {node with Expr = Assign(target', expr)})
+            | None -> None
+        elif not (isValue idx) then
+            match (reduce env idx) with
+            | Some(env', idx') ->
+                let target' = {target with Expr = Application(appExpr, [arr; idx'])}
+                Some(env', {node with Expr = Assign(target', expr)})
+            | None -> None
+        elif not (isValue expr) then
+            match (reduce env expr) with
+            | Some(env', expr') ->
+                Some(env', {node with Expr = Assign(target, expr')})
+            | None -> None
+        else
+            // All are values: perform the assignment
+            match arr.Expr, idx.Expr with
+            | Pointer(addr), IntVal(i) ->
+                match env.Heap.TryFind addr with
+                | Some({Expr = IntVal(len)}) when i >= 0 && i < len ->
+                    let env' = {env with Heap = env.Heap.Add(addr + 1u + uint i, expr)}
+                    Some(env', {node with Expr = expr.Expr})
+                | _ -> None
+            | _ -> None
+
+    | Assign({Expr = ArrayElem(arr, idx)} as target, expr) when not (isValue arr) ->
+        match (reduce env arr) with
+        | Some(env', arr') ->
+            let target' = {target with Expr = ArrayElem(arr', idx)}
+            Some(env', {node with Expr = Assign(target', expr)})
+        | None -> None
+    | Assign({Expr = ArrayElem(arr, idx)} as target, expr) when not (isValue idx) ->
+        match (reduce env idx) with
+        | Some(env', idx') ->
+            let target' = {target with Expr = ArrayElem(arr, idx')}
+            Some(env', {node with Expr = Assign(target', expr)})
+        | None -> None
+    | Assign({Expr = ArrayElem(arr, idx)}, expr) when not (isValue expr) ->
+        match (reduce env expr) with
+        | Some(env', expr') ->
+            Some(env', {node with Expr = Assign({node with Expr = ArrayElem(arr, idx)}, expr')})
+        | None -> None
+    | Assign({Expr = ArrayElem({Expr = Pointer(addr)}, {Expr = IntVal(i)})}, value) ->
+        match env.Heap.TryFind addr with
+        | Some({Expr = IntVal(len)}) when i >= 0 && i < len ->
+            let env' = {env with Heap = env.Heap.Add(addr + 1u + uint i, value)}
+            Some(env', {node with Expr = value.Expr})
+        | _ -> None  // Out of bounds or not an array
 
     | Assign({Expr = FieldSelect(selTarget, field)} as target,
              expr) when not (isValue selTarget)->
@@ -528,6 +584,36 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
         let rewritten = LetMut(name, init, ifNode)
         Some(env, {node with Expr = rewritten})
         
+    | IncDec(op, name) ->
+        match (env.Mutables.TryFind name) with
+        | Some(v) ->
+            match v.Expr with
+            | IntVal(v1) ->
+                let delta = 
+                    match op with
+                    | IncDecOp.PreInc | IncDecOp.PostInc -> 1
+                    | IncDecOp.PreDec | IncDecOp.PostDec -> -1
+                let newNode = {node with Expr = IntVal(v1 + delta)}
+                let env' = {env with Mutables = env.Mutables.Add(name, newNode)}
+                let returnNode =
+                    match op with
+                    | IncDecOp.PostInc | IncDecOp.PostDec -> {node with Expr = IntVal(v1)}
+                    | IncDecOp.PreInc  | IncDecOp.PreDec  -> {node with Expr = newNode.Expr}
+                Some(env', returnNode)
+            | FloatVal(v2) ->
+                let delta = 
+                    match op with
+                    | IncDecOp.PreInc | IncDecOp.PostInc -> 1.0f
+                    | IncDecOp.PreDec | IncDecOp.PostDec -> -1.0f
+                let newNode = {node with Expr = FloatVal(v2 + delta)}
+                let env' = {env with Mutables = env.Mutables.Add(name, newNode)}
+                let returnNode =
+                    match op with
+                    | IncDecOp.PostInc | IncDecOp.PostDec -> {node with Expr = FloatVal(v2)}
+                    | IncDecOp.PreInc  | IncDecOp.PreDec  -> {node with Expr = newNode.Expr}
+                Some(env', returnNode)
+            | _ -> None
+        | None -> None
 
     | Application(expr, args) ->
         match expr.Expr with
@@ -552,6 +638,38 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                         /// Lambda term body with all substitutions applied
                         let body2 = List.fold folder body lamArgNamesValues
                         Some(env, {node with Expr = body2.Expr})
+                    else None
+        | Var(name) when name = "arrayLength" ->
+            // Builtin: arrayLength(arr)
+            if args.Length <> 1 then None
+            else
+                match (reduce env args[0]) with
+                | Some(env', arg') -> Some(env', {node with Expr = Application(expr, [arg'])})
+                | None ->
+                    if isValue args[0] then
+                        match args[0].Expr with
+                        | Pointer(addr) ->
+                            match env.Heap.TryFind addr with
+                            | Some({Expr = IntVal(len)}) -> Some(env, {node with Expr = IntVal(len)})
+                            | _ -> None  // Not an array or corrupted heap
+                        | _ -> None  // Not a pointer
+                    else None
+        | Var(name) when name = "arrayElem" ->
+            // Builtin: arrayElem(arr, index)
+            if args.Length <> 2 then None
+            else
+                match (reduceLhsRhs env args[0] args[1]) with
+                | Some(env', arg0', arg1') ->
+                    Some(env', {node with Expr = Application(expr, [arg0'; arg1'])})
+                | None ->
+                    if isValue args[0] && isValue args[1] then
+                        match args[0].Expr, args[1].Expr with
+                        | Pointer(addr), IntVal(i) ->
+                            match env.Heap.TryFind addr with
+                            | Some({Expr = IntVal(len)}) when i >= 0 && i < len ->
+                                Some(env, env.Heap[addr + 1u + uint i])
+                            | _ -> None  // Out of bounds or not an array
+                        | _ -> None  // Invalid types
                     else None
         | _ ->
             match (reduce env expr) with
@@ -600,7 +718,8 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                 fields |> List.mapi (fun i _ -> env.Heap.[addr + uint i])
             let (heap': Heap<'E,'T>,baseAddr) = heapAlloc env.Heap fieldNodes
             let ptrInfo' = env.PtrInfo.Add(baseAddr, fields)
-            Some({env with Heap = heap'; PtrInfo = ptrInfo'}, {node with Expr = Pointer(baseAddr)})
+            Some({env with Heap = heap'; PtrInfo = ptrInfo'}, {node with Expr = Pointer(baseAddr)})        
+        | None -> failwith "Not Implemented"
 
     // Shallow Copy
     | Copy({Expr = StructCons(fields)}) ->
@@ -675,6 +794,58 @@ let rec internal reduce (env: RuntimeEnv<'E,'T>)
                 | _ -> None
             | _ -> None
         | None -> None
+    | ArrayCons(size, init) ->
+        match (reduceLhsRhs env size init) with
+        | Some(env', size', init') ->
+            Some(env', {node with Expr = ArrayCons(size', init')})
+        | None ->
+            if isValue size && isValue init then
+                match size.Expr with
+                | IntVal(n) when n >= 1 ->
+                    // Allocate: length at baseAddr, elements at baseAddr+1 to baseAddr+n
+                    let lengthNode = {node with Expr = IntVal(n)}
+                    let elements = List.replicate n init
+                    let (heap', baseAddr) = heapAlloc env.Heap (lengthNode :: elements)
+                    Some({env with Heap = heap'}, {node with Expr = Pointer(baseAddr)})
+                | _ -> None  // Invalid size (not a positive integer)
+            else None
+
+    | ArrayLength(name) ->
+        if not (isValue name) then
+            match (reduce env name) with
+            | Some(env', name') -> Some(env', {node with Expr = ArrayLength(name')})
+            | None -> None
+        else
+            match name.Expr with
+            | Pointer(addr) ->
+                match env.Heap.TryFind addr with
+                | Some({Expr = IntVal(len)}) -> Some(env, {node with Expr = IntVal(len)})
+                | _ -> None  // Not an array or corrupted heap
+            | Var(vname) ->
+                match env.Mutables.TryFind vname with
+                | Some({Expr = Pointer(addr)}) ->
+                    match env.Heap.TryFind addr with
+                    | Some({Expr = IntVal(len)}) -> Some(env, {node with Expr = IntVal(len)})
+                    | _ -> None  // Not an array or corrupted heap
+                | _ -> None  // Variable not bound to a pointer
+            | _ -> None  // Name not a variable or pointer
+
+    | ArrayElem(name, index) ->
+        match (reduceLhsRhs env name index) with
+        | Some(env', name', index') ->
+            Some(env', {node with Expr = ArrayElem(name', index')})
+        | None ->
+            if isValue name && isValue index then
+                match name.Expr, index.Expr with
+                | Pointer(addr), IntVal(i) ->
+                    match env.Heap.TryFind addr with
+                    | Some({Expr = IntVal(len)}) when i >= 0 && i < len ->
+                        Some(env, env.Heap[addr + 1u + uint i])
+                    | _ -> None  // Out of bounds or not an array
+                | _ -> None  // Invalid name or index
+            else None    
+    | Copy(arg) -> failwith "Not Implemented"
+    | DeepCopy(arg) -> failwith "Not Implemented"
 
 /// Attempt to reduce the given lhs, and then (if the lhs is a value) the rhs,
 /// using the given runtime environment.  Return None if either (a) the lhs

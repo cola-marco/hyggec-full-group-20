@@ -90,6 +90,10 @@ type Token =
     | DO
     /// Keyword 'for'
     | FOR
+    /// Pre-PostInc symbol.
+    | INC
+    /// Pre-PostDec symbol.
+    | DEC
     /// Keyword 'fun'.
     | FUN
     /// Keyword 'struct'.
@@ -122,6 +126,16 @@ type Token =
     | IDENT of value: string
     /// End of file.
     | EOF
+    /// keyword `array`
+    | ARRAY
+    /// Keyword `arrayElem`
+    | ARRAYELEM
+    /// Keyword `arrayLength`
+    | ARRAYLENGTH
+    /// Keyword `in`
+    | IN
+    /// Keyword `slice`
+    | SLICE
 
 
 /// Position in a file.
@@ -179,6 +193,8 @@ let rec internal tokenizeRec (input: string) (pos: Position)
     | Symbol ")"  RPAREN   pos (accepted, pos')
     | Symbol "{"  LCURLY   pos (accepted, pos')
     | Symbol "}"  RCURLY   pos (accepted, pos')
+    | Symbol "++" INC      pos (accepted, pos')
+    | Symbol "--" DEC      pos (accepted, pos')
     | Symbol "+"  PLUS     pos (accepted, pos')
     | Symbol "-"  MINUS    pos (accepted, pos')
     | Symbol "*"  TIMES    pos (accepted, pos')
@@ -241,6 +257,11 @@ and internal mkKeywordOrIdent (s: string) =
     | "with" -> WITH
     | "true" -> LIT_BOOL true
     | "false" -> LIT_BOOL false
+    | "array" -> ARRAY
+    | "arrayElem" -> ARRAYELEM
+    | "arrayLength" -> ARRAYLENGTH
+    | "in" -> IN
+    | "slice" -> SLICE
     | "rec" -> REC
     | other -> IDENT other
 

@@ -1,3 +1,4 @@
 let x = 3;
 let y = 7;
+let unused = 100;
 assert(x = y)
