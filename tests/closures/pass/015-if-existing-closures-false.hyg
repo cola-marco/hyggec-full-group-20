@@ -1,0 +1,8 @@
+let cond = false;
+
+let f = fun (x: int) -> x + 1;
+let g = fun (x: int) -> x + 2;
+
+let h = if cond then f else g;
+
+assert(h(10) = 12)
