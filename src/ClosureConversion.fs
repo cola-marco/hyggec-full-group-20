@@ -169,16 +169,21 @@ let private isGeneratedClosureType (tpe: Type.Type) =
 /// Create a common wrapper closure for an if-expression whose branches already
 /// produce different generated closure types, but whose original source type is
 /// the same function type.
-///
-/// This version avoids generating union constructors and pattern matching.
-/// Instead, the wrapper closure stores both possible closures and an integer
-/// tag telling the wrapper which one was selected.
 let private makeSharedClosureIf (node: Typechecker.TypedAST) (condResult: ConversionResult) (trueResult: ConversionResult) (falseResult: ConversionResult) (argTypes: List<Type.Type>) (returnType: Type.Type) : ConversionResult =
     let commonClosureTypeName =
         nameGenerator.Generate "ClosureIf"
 
+    let payloadTypeName =
+        nameGenerator.Generate "ClosureIfPayload"
+
     let closureArgName =
         nameGenerator.Generate "clos"
+
+    let leftPayloadName =
+        nameGenerator.Generate "left"
+
+    let rightPayloadName =
+        nameGenerator.Generate "right"
 
     let argNamesAndTypes =
         argTypes
@@ -192,6 +197,9 @@ let private makeSharedClosureIf (node: Typechecker.TypedAST) (condResult: Conver
     let commonClosurePretype =
         mkPretype node.Pos (TId commonClosureTypeName)
 
+    let payloadPretype =
+        mkPretype node.Pos (TId payloadTypeName)
+
     let argPretypes =
         argTypes |> List.map (typeToPretype node.Pos)
 
@@ -204,6 +212,21 @@ let private makeSharedClosureIf (node: Typechecker.TypedAST) (condResult: Conver
                 )
             )
 
+    let payloadType =
+        {
+            Name = payloadTypeName
+            Def =
+                mkPretype node.Pos
+                    (
+                        Pretype.TUnion(
+                            [
+                                "Left", typeToPretype node.Pos trueResult.ConvertedType
+                                "Right", typeToPretype node.Pos falseResult.ConvertedType
+                            ]
+                        )
+                    )
+        }
+
     let commonClosureType =
         {
             Name = commonClosureTypeName
@@ -213,9 +236,7 @@ let private makeSharedClosureIf (node: Typechecker.TypedAST) (condResult: Conver
                         Pretype.TStruct(
                             [
                                 "$f", wrapperFunctionType
-                                "tag", mkPretype node.Pos (TId "int")
-                                "left", typeToPretype node.Pos trueResult.ConvertedType
-                                "right", typeToPretype node.Pos falseResult.ConvertedType
+                                "payload", payloadPretype
                             ]
                         )
                     )
@@ -224,48 +245,37 @@ let private makeSharedClosureIf (node: Typechecker.TypedAST) (condResult: Conver
     let closureVar =
         mkNode node.Pos (Var closureArgName)
 
-    let tagField =
-        mkNode node.Pos (FieldSelect(closureVar, "tag"))
-
-    let leftField =
-        mkNode node.Pos (FieldSelect(closureVar, "left"))
-
-    let rightField =
-        mkNode node.Pos (FieldSelect(closureVar, "right"))
+    let payloadField =
+        mkNode node.Pos (FieldSelect(closureVar, "payload"))
 
     let argVars =
         argNamesAndTypes
         |> List.map (fun (name, _) -> mkNode node.Pos (Var name))
 
-    let makeInnerCall closureExpr =
+    let makeInnerCall payloadVariableName =
+        let payloadVar =
+            mkNode node.Pos (Var payloadVariableName)
+
         let functionField =
-            mkNode node.Pos (FieldSelect(closureExpr, "$f"))
+            mkNode node.Pos (FieldSelect(payloadVar, "$f"))
 
         mkNode node.Pos
             (
                 Application(
                     functionField,
-                    closureExpr :: argVars
-                )
-            )
-
-    let tagIsZero =
-        mkNode node.Pos
-            (
-                BinRelOp(
-                    RelationalOp.Eq,
-                    tagField,
-                    mkNode node.Pos (IntVal 0)
+                    payloadVar :: argVars
                 )
             )
 
     let wrapperBody =
         mkNode node.Pos
             (
-                If(
-                    tagIsZero,
-                    makeInnerCall leftField,
-                    makeInnerCall rightField
+                Match(
+                    payloadField,
+                    [
+                        "Left", leftPayloadName, makeInnerCall leftPayloadName
+                        "Right", rightPayloadName, makeInnerCall rightPayloadName
+                    ]
                 )
             )
 
@@ -278,16 +288,17 @@ let private makeSharedClosureIf (node: Typechecker.TypedAST) (condResult: Conver
                 )
             )
 
-    let makeBranch tagValue =
+    let makeBranch label branchExpr =
+        let payloadExpr =
+            mkNode node.Pos (UnionCons(label, branchExpr))
+
         let rawClosure =
             mkNode node.Pos
                 (
                     StructCons(
                         [
                             "$f", wrapperFunction
-                            "tag", mkNode node.Pos (IntVal tagValue)
-                            "left", trueResult.Expr
-                            "right", falseResult.Expr
+                            "payload", payloadExpr
                         ]
                     )
                 )
@@ -306,8 +317,8 @@ let private makeSharedClosureIf (node: Typechecker.TypedAST) (condResult: Conver
                 (
                     If(
                         condResult.Expr,
-                        makeBranch 0,
-                        makeBranch 1
+                        makeBranch "Left" trueResult.Expr,
+                        makeBranch "Right" falseResult.Expr
                     )
                 )
 
@@ -317,13 +328,13 @@ let private makeSharedClosureIf (node: Typechecker.TypedAST) (condResult: Conver
                     condResult.TypeDefs
                     @ trueResult.TypeDefs
                     @ falseResult.TypeDefs
-                    @ [commonClosureType]
+                    @ [payloadType; commonClosureType]
                 )
 
         ConvertedType =
             TVar commonClosureTypeName
     }
-
+    
 /// Replace captured variables in an already converted untyped AST.
 /// For example, x becomes $clos_1.x inside the generated plain function body.
 let rec replaceCapturedVars (closureArgName: string) (captured: Set<string>) (node: AST.UntypedAST) : AST.UntypedAST =

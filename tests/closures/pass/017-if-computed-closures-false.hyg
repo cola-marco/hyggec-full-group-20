@@ -1,0 +1,8 @@
+let cond = false;
+
+let makeAdder = fun (n: int) -> fun (x: int) -> n + x;
+let makeSubber = fun (n: int) -> fun (x: int) -> n - x;
+
+let h = if cond then makeAdder(10) else makeSubber(10);
+
+assert(h(5) = 5)
