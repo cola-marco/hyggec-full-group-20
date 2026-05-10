@@ -342,9 +342,16 @@ let private makeSharedClosureIf (node: Typechecker.TypedAST) (condResult: Conver
                 )
             )
 
-    closureReturnTypes <-
-        closureReturnTypes.Add(commonClosureTypeName, returnType)
+    let convertedWrapperReturnType =
+        match tryGetClosureReturnType trueResult.ConvertedType with
+        | Some convertedReturnType ->
+            convertedReturnType
+        | None ->
+            returnType
 
+    closureReturnTypes <-
+        closureReturnTypes.Add(commonClosureTypeName, convertedWrapperReturnType)
+        
     {
         Expr =
             mkLike node
