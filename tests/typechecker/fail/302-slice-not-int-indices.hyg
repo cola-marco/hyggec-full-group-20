@@ -1,0 +1,14 @@
+let n = 5;
+let arr: array {int} = array(n, 0);
+
+let mutable i = 0;
+while (i < arrayLength(arr)) do {
+    arrayElem(arr, i) <- arrayElem(arr, i) + i;
+    i <- i + 1
+};
+
+let arr2 = slice(arr, 1.0f, 3.0f);
+
+assert(arrayElem(arr2,0) = 1);
+assert(arrayElem(arr2,1) = 2);
+assert(arrayElem(arr2,2) = 3)

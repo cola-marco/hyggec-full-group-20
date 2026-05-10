@@ -154,6 +154,10 @@ let rec internal formatASTRec (node: AST.Node<'E,'T>): Tree =
     | LetMut(name, init, scope) ->
         mkTree $"Let mutable %s{name}" node [("init", formatASTRec init)
                                              ("scope", formatASTRec scope)]
+    | LetRec(name, tpe, init, scope) ->
+        mkTree $"LetRec %s{name}" node [("Ascription", formatPretypeNode tpe)
+                                        ("init", formatASTRec init)
+                                        ("scope", formatASTRec scope)]
     | Assign(target, expr) ->
         mkTree $"Assign" node [("target", formatASTRec target)
                                ("expr", formatASTRec expr)]
@@ -210,6 +214,12 @@ let rec internal formatASTRec (node: AST.Node<'E,'T>): Tree =
         ]
     | ArrayLength(arr) ->
         mkTree "ArrayLength" node ["name", formatASTRec arr]
+    | Slice(baseArray, lo, hi) ->
+        mkTree "Slice" node [
+            ("of array", formatASTRec baseArray)
+            ("from index", formatASTRec lo)
+            ("to index", formatASTRec hi)
+        ]
     | Match(expr, cases) ->
         let casesChildren =
             List.map (fun (l, v, cont) -> ($"case %s{l}{{%s{v}}}",

@@ -77,6 +77,10 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
         // Propagate the substitution in the "let" scope
         {node with Expr = LetT(vname, tpe, (subst init var sub),
                                (subst scope var sub))}
+    | LetRec(vname, tpe, init, scope) when vname = var ->
+        {node with Expr = LetRec(vname, tpe, subst init var sub, scope)}
+    | LetRec(vname, tpe, init, scope) ->
+        {node with Expr = LetRec(vname, tpe, subst init var sub, subst scope var sub)}
 
     | LetMut(vname, init, scope) when vname = var ->
         // Do not substitute the variable in the "let mutable" scope
@@ -155,6 +159,12 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
         let substIndex= subst index var sub
         {node with Expr = ArrayElem(substArr, substIndex)}    
     | IncDec(op, name) -> failwith "Not Implemented"
+    
+    | Slice(arr, lo, hi) ->
+        let substArr = subst arr var sub 
+        let substLo = subst lo var sub 
+        let substHi = subst hi var sub
+        {node with Expr = Slice(substArr, substLo, substHi)}
 
 /// Compute the set of free variables in the given AST node.
 let rec freeVars (node: Node<'E,'T>): Set<string> =
@@ -270,6 +280,7 @@ let rec capturedVars (node: Node<'E,'T>): Set<string> =
     | Ascription(_, node) -> capturedVars node
     | Let(name, init, scope)
     | LetT(name, _, init, scope)
+    | LetRec(name, _, init, scope)
     | LetMut(name, init, scope) ->
         // All the captured variables in the 'let' initialisation, together with
         // all captured variables in the scope --- minus the newly-bound var
@@ -312,7 +323,8 @@ let rec capturedVars (node: Node<'E,'T>): Set<string> =
     | DeepCopy(arg) -> capturedVars arg
     | ArrayCons(size, init) -> Set.union (capturedVars size) (capturedVars init)
     | ArrayElem(name, index) -> Set.union (capturedVars name) (capturedVars index)
-    | ArrayLength(name) -> capturedVars name  
+    | ArrayLength(name) -> capturedVars name
+    | Slice(arr, lo, hi) -> Set.union (capturedVars arr) (capturedVars lo) |> Set.union (capturedVars hi)
 
     
 /// Compute the union of the captured variables in a list of AST nodes.

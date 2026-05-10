@@ -555,6 +555,34 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
     // 'Let...' declares 'name' as a Lambda expression with a TFun type
     | Let(name, {Node.Expr = Lambda(args, body);
                  Node.Type = TFun(targs, _)}, scope)
+    | LetRec(name, _, {Node.Expr = Lambda(args, body);
+                     Node.Type = TFun(targs, _)}, scope) ->
+        /// Assembly label to mark the position of the compiled function body.
+        /// For readability, we make the label similar to the function name
+        let funLabel = Util.genSymbol $"fun_%s{name}"
+
+        /// Names of the lambda term arguments
+        let (argNames, _) = List.unzip args
+        /// List of pairs associating each function argument to its type
+        let argNamesTypes = List.zip argNames targs
+        /// New env with function label available
+        let env2 = {env with VarStorage = env.VarStorage.Add(name, Storage.Label(funLabel))}
+        /// Compiled function body with Storage info where the name of the compiled function points to the
+        /// label 'funLabel'
+        let bodyCode = compileFunction argNamesTypes body env2
+
+        /// Compiled function code where the function label is located just
+        /// before the 'bodyCode', and everything is placed at the end of the
+        /// Text segment (i.e. in the "PostText")
+        let funCode =
+            (Asm(RV.LABEL(funLabel), $"Code for function '%s{name}'")
+                ++ bodyCode).TextToPostText
+
+        // Finally, compile the 'let...'' scope with the newly-defined function
+        // label in the variables storage, and append the 'funCode' above. The
+        // 'scope' code leaves its result in the 'let...' target register
+        (doCodegen env2 scope)
+            ++ funCode
     | LetT(name, _, {Node.Expr = Lambda(args, body);
                      Node.Type = TFun(targs, _)}, scope) ->
         /// Assembly label to mark the position of the compiled function body.
@@ -691,36 +719,71 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
                 selTargetCode ++ rhsCode ++ assignCode
             | t ->
                 failwith $"BUG: field selection on invalid object type: %O{t}"
-        | ArrayElem(arrayExpr, indexExpr) ->
-            /// Compile the array expression to get the pointer in target register
-            let arrayCode = doCodegen env arrayExpr
-            /// Compile the index expression to target+1 register
-            let indexCode = doCodegen {env with Target = env.Target + 1u} indexExpr
-            /// Compile the rhs to target+2 register, leaving the index in target+1
-            let rhsCode = doCodegen {env with Target = env.Target + 2u} rhs
-            /// Calculate element address: base + 4 + index*4
-            let addrCalcCode =
-                Asm([
-                    (RV.ADDI(Reg.r(env.Target + 3u), Reg.r(env.Target + 1u), Imm12(1)), "offset_index = 1 + index")
-                    (RV.SLLI(Reg.r(env.Target + 3u), Reg.r(env.Target + 3u), Shamt(2u)), "offset_index = offset_index * 4")
-                    (RV.ADD(Reg.r(env.Target + 3u), Reg.r(env.Target), Reg.r(env.Target + 3u)), "element_addr = base + offset")
-                ])
-            /// Assembly code that performs the array element assignment
-            let assignCode =
+        | ArrayElem(array, index) ->
+            //if is slice get index + lo 
+            //if is array get index
+            let targetReg = env.Target
+            let arrayReg = env.Target + 1u
+            let sizeReg = env.Target + 2u
+            let baseArrayAddrReg = env.Target + 3u
+            let loReg = env.Target + 4u
+            let hiReg = env.Target + 5u
+            let notSliceLabel = Util.genSymbol("notSliceLabel")
+            let sliceDoneLabel = Util.genSymbol("sliceDone")
+            let successLabel = Util.genSymbol("success")
+            let failLabel = Util.genSymbol("fail")
+            let rhsTarget = env.Target + 6u
+            let rhsFPTarget = env.FPTarget + 6u
+            let rhsEnv = { env with Target = rhsTarget; FPTarget = rhsFPTarget }
+            let storeRhsCode =
                 match rhs.Type with
-                | t when (isSubtypeOf rhs.Env t TUnit) ->
-                    Asm()
                 | t when (isSubtypeOf rhs.Env t TFloat) ->
-                    Asm(RV.FSW_S(FPReg.r(env.FPTarget), Imm12(0), Reg.r(env.Target + 3u)),
-                        "Store float value to array element")
+                    Asm(RV.FSW_S(FPReg.r(rhsFPTarget), Imm12(0), Reg.r(baseArrayAddrReg)),
+                        "Store float value into array element")
                 | _ ->
-                    Asm(RV.SW(Reg.r(env.Target + 2u), Imm12(0), Reg.r(env.Target + 3u)),
-                        "Store value to array element")
-            /// Put everything together
-            arrayCode ++ indexCode ++ rhsCode ++ addrCalcCode ++ assignCode
-        | _ ->
-            failwith ($"BUG: assignment to invalid target:%s{Util.nl}"
-                      + $"%s{PrettyPrinter.prettyPrint lhs}")
+                    Asm(RV.SW(Reg.r(rhsTarget), Imm12(0), Reg.r(baseArrayAddrReg)),
+                        "Store value into array element")
+            //compile array into target
+            (doCodegen env array)
+            //will be -1 if slice, array else
+                .AddText([
+                    (RV.MV(Reg.r(arrayReg), Reg.r(targetReg)), "copy array object pointer")
+                    (RV.LI(Reg.r(sizeReg), -1), "")
+                    (RV.LW(Reg.r(baseArrayAddrReg), Imm12(0), Reg.r(arrayReg)), "load first word of array/slice object for slice detection")
+                ])
+            ++ (doCodegen env index)
+                .AddText([
+                    (RV.BNE(Reg.r(sizeReg), Reg.r(baseArrayAddrReg), notSliceLabel), "branch if not slice (first word not slice marker)")
+                    (RV.LW(Reg.r(baseArrayAddrReg), Imm12(4), Reg.r(arrayReg)), "get the base addr of target slice")
+                    (RV.LW(Reg.r(loReg), Imm12(8), Reg.r(arrayReg)), "get lower bound of target slice")
+                    (RV.LW(Reg.r(hiReg), Imm12(12), Reg.r(arrayReg)), "get upper bound of target slice")
+                    (RV.SUB(Reg.r(sizeReg), Reg.r(hiReg), Reg.r(loReg)), "reuse sizeReg to check if index is out of bounds on slice")
+                    (RV.BGT(Reg.r(targetReg), Reg.r(sizeReg), failLabel), "Fail if out of bounds")
+                    (RV.ADD(Reg.r(targetReg), Reg.r(targetReg), Reg.r(loReg)), "offset index if slice")
+                    (RV.J(sliceDoneLabel), "")
+                    (RV.LABEL(notSliceLabel), "")
+                    (RV.MV(Reg.r(baseArrayAddrReg), Reg.r(arrayReg)), "use raw array base address")
+                    (RV.LABEL(sliceDoneLabel), "")
+                    (RV.LW(Reg.r(sizeReg), Imm12(0), Reg.r(baseArrayAddrReg)), "get size of array")
+                    (RV.ADDI(Reg.r(sizeReg), Reg.r(sizeReg), Imm12(-1)), "max index is size - 1")
+                    (RV.BGT(Reg.r(targetReg), Reg.r(sizeReg), failLabel), "Fail if out of bounds")
+                    (RV.BLTZ(Reg.r(targetReg), failLabel), "Fail if out of bounds")
+                    (RV.LI(Reg.r(sizeReg), 4), "")
+                    (RV.MUL(Reg.r(sizeReg), Reg.r(targetReg), Reg.r(sizeReg)), "Calculate byte offset")
+                    (RV.ADD(Reg.r(baseArrayAddrReg), Reg.r(baseArrayAddrReg), Reg.r(sizeReg)), "calculate address to array header")
+                    (RV.ADDI(Reg.r(baseArrayAddrReg), Reg.r(baseArrayAddrReg), Imm12(4)), "skip header to first element")
+                ])
+            ++ (doCodegen rhsEnv rhs)
+            ++ storeRhsCode
+                .AddText([
+                (RV.J(successLabel), "Jump to success")
+                (RV.LABEL(failLabel), "")
+                (RV.LI(Reg.a7, 93), "RARS syscall: Exit2")
+                (RV.LI(Reg.a0, 1), "Corrupt array address or slice boundaries out of bounds")
+                (RV.ECALL, "")
+                (RV.LABEL(successLabel), "")
+                ])
+
 
     | While(cond, body) ->
         /// Label to mark the beginning of the 'while' loop
@@ -1174,106 +1237,199 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
     | Pointer(_) ->
         failwith "BUG: pointers cannot be compiled (by design!)"
     | ArrayCons(size, init) ->
-        /// Compile size first to have it available and keep it in r(Target)
-        let compiledSize = doCodegen env size
+        // To compile a array constructor, we allocate heap space for the
+        // whole array instance (size + 1), and then compile its initialisation
+        // one-by-one, storing each result in the corresponding heap location.
+        // The array heap address will end up in the 'target' register - i.e.
+        // the register will contain a pointer to the first element of the
+        // allocated structure
+        let loopLabel = Util.genSymbol("arrayInitLoop")
         
-        /// Allocate heap space for the array: size+1 elements (first for length)
-        let sizeAllocCode =
-            (beforeSysCall [Reg.a0] [])
-                .AddText([
-                    RV.ADDI(Reg.a0, Reg.r(env.Target), Imm12(1)), "a0 = size + 1"
-                    RV.SLLI(Reg.a0, Reg.a0, Shamt(2u)), "a0 = (size + 1) * 4 bytes"
-                    RV.LI(Reg.a7, 9), "RARS syscall: Sbrk"
-                    RV.ECALL, ""
-                    RV.MV(Reg.r(env.Target + 1u), Reg.a0),
-                    "Move syscall result (array mem address) to target+1"
+        let arrayConsCode = //Yes, I am using a lot of registers
+            let targetReg = env.Target
+            let wordCountReg = env.Target + 1u
+            let bytesPerWordReg = env.Target + 2u
+            let allocateBytesReg = env.Target + 3u
+            let baseAdrrReg = env.Target + 4u //size is kept here
+            let stopCondReg = env.Target + 5u
+            let counterReg = env.Target + 6u
+            let initStoreCode =
+                match init.Type with
+                | t when (isSubtypeOf init.Env t TFloat) ->
+                    Asm(RV.FSW_S(FPReg.r(env.FPTarget), Imm12(0), Reg.r(counterReg)),
+                        "Store float init value in array base mem address + offset")
+                | _ ->
+                    Asm(RV.SW(Reg.r(env.Target), Imm12(0), Reg.r(counterReg)),
+                        "Store init value in array base mem address + offset")
+            //compile size,  be in target reg
+            (doCodegen env size) 
+            ++ (beforeSysCall [Reg.a0] [])
+                    .AddText([
+                (RV.ADDI(Reg.r(wordCountReg),Reg.r(targetReg),Imm12(1)),"Amount of words to allocate = size + 1")
+                (RV.LI(Reg.r(bytesPerWordReg), 4), "Bytes per word")
+                (RV.MUL(Reg.r(allocateBytesReg), Reg.r(wordCountReg), Reg.r(bytesPerWordReg)), "Amount of bytes = words * 4")
+                (RV.MV(Reg.a0, Reg.r(allocateBytesReg)), "Copy amt of mem to a0")
+                (RV.LI(Reg.a7, 9), "RARS syscall: Sbrk")
+                (RV.ECALL, "")
+                //store contents of target (array size) into address held in a0
+                (RV.SW(Reg.r(targetReg),Imm12(0), Reg.a0),"Store size value in target register in base array mem base address")
+                (RV.MV(Reg.r(baseAdrrReg), Reg.a0), "keep the mem address")
+                (RV.ADD(Reg.r(stopCondReg), Reg.r(baseAdrrReg), Reg.r(allocateBytesReg)), "Max mem address as stop cond")
                 ])
-                ++ afterSysCall [Reg.a0] []
-        
-        /// Store the size at offset 0
-        let storeSizeCode =
-            Asm(RV.SW(Reg.r(env.Target), Imm12(0), Reg.r(env.Target + 1u)),
-                "Store array size at offset 0")
-        
-        /// Compile init to target+2u (so it won't overwrite size in r(Target))
-        let initCode =
-            doCodegen {env with Target = env.Target + 2u} init
-        
-        /// Create a loop to initialize all elements starting at offset 4
-        let loopLabel = Util.genSymbol "array_init_loop"
-        let loopEndLabel = Util.genSymbol "array_init_end"
-        let initLoopCode =
-            Asm(RV.LI(Reg.r(env.Target + 3u), 0), "Initialize loop counter to 0")
-                .AddText(RV.LABEL(loopLabel), "Array initialization loop")
-                .AddText(RV.BEQ(Reg.r(env.Target + 3u), Reg.r(env.Target), loopEndLabel),
-                         "Exit loop when counter == size")
+            ++ (afterSysCall [Reg.a0] [])
+            ++ (doCodegen env init) //sizeReg overwritten
                 .AddText([
-                    RV.ADDI(Reg.r(env.Target + 4u), Reg.r(env.Target + 3u), Imm12(1)), "offset = counter + 1"
-                    RV.SLLI(Reg.r(env.Target + 4u), Reg.r(env.Target + 4u), Shamt(2u)), "offset = offset * 4"
-                    RV.ADD(Reg.r(env.Target + 4u), Reg.r(env.Target + 1u), Reg.r(env.Target + 4u)), "address = base + offset"
+                (RV.ADDI(Reg.r(counterReg), Reg.r(baseAdrrReg), Imm12(4)), "Init counter as base addr + 4")
+                (RV.LABEL(loopLabel), "Loop entry point")
                 ])
+            ++ initStoreCode
                 .AddText([
-                    match init.Type with
-                    | t when isSubtypeOf init.Env t TUnit ->
-                        RV.NOP, ""
-                    | t when isSubtypeOf init.Env t TFloat ->
-                        RV.FSW_S(FPReg.r env.FPTarget, Imm12 0, Reg.r(env.Target + 4u)),
-                        "Store init value (float)"
-                    | _ ->
-                        RV.SW(Reg.r(env.Target + 2u), Imm12 0, Reg.r(env.Target + 4u)),
-                        "Store init value"
+                    (RV.ADDI(Reg.r(counterReg), Reg.r(counterReg), Imm12(4)), "Increment counter offset by 4")
+                    (RV.BNE(Reg.r(counterReg), Reg.r(stopCondReg), loopLabel), "Loop until counter = size")
+                    (RV.MV(Reg.r(targetReg), Reg.r(baseAdrrReg)), "Like struct initializer, end up with baseaddr of array in target reg")
                 ])
-                .AddText([
-                    RV.ADDI(Reg.r(env.Target + 3u), Reg.r(env.Target + 3u), Imm12(1)), "counter++"
-                    RV.LA(Reg.r(env.Target + 4u), loopLabel), "Load loop start address"
-                    RV.JR(Reg.r(env.Target + 4u)), "Jump to loop start"
-                ])
-                .AddText(RV.LABEL loopEndLabel, "End of array initialization")
-        
-        compiledSize ++ sizeAllocCode ++ storeSizeCode ++ initCode ++ initLoopCode
-            .AddText(RV.MV(Reg.r env.Target, Reg.r(env.Target + 1u)),
-                     "Move array pointer result to target register")
+        arrayConsCode
 
     | ArrayElem(array, index) ->
-        /// Compile array expression to get pointer in target
-        let arrayCode = doCodegen env array
-        /// Compile index to target+1
-        let indexCode =
-            (doCodegen {env with Target = env.Target + 1u} index)
-                .AddText(RV.MV(Reg.r(env.Target + 2u), Reg.r(env.Target + 1u)),
-                         "Save index to a temporary register")
-        
-        /// Calculate address: base + 4 + index*4 = base + 4*(1+index)
-        let addrCalcCode =
-            Asm([
-                (RV.ADDI(Reg.r(env.Target + 2u), Reg.r(env.Target + 2u), Imm12(1)), "offset_index = 1 + index")
-                (RV.SLLI(Reg.r(env.Target + 2u), Reg.r(env.Target + 2u), Shamt(2u)), "offset_index = offset_index * 4")
-                (RV.ADD(Reg.r(env.Target + 2u), Reg.r(env.Target), Reg.r(env.Target + 2u)), "element_addr = base + offset")
-            ])
-        
-        /// Load the element from memory at the computed address
-        let loadElemCode =
-            match node.Type with
-            | t when (isSubtypeOf node.Env t TUnit) ->
-                Asm()
-            | t when (isSubtypeOf node.Env t TFloat) ->
-                Asm(RV.FLW_S(FPReg.r(env.FPTarget), Imm12(0), Reg.r(env.Target + 2u)),
-                    "Load array element (float)")
-            | _ ->
-                Asm(RV.LW(Reg.r(env.Target), Imm12(0), Reg.r(env.Target + 2u)),
-                    "Load array element")
-        
-        arrayCode ++ indexCode ++ addrCalcCode ++ loadElemCode
+            let targetReg = env.Target
+            let arrayReg = env.Target + 8u
+            let sizeReg = env.Target + 1u
+            let elemAddrReg = env.Target + 2u
+            let baseAdrrReg = env.Target + 3u
+            let sliceMarkerReg = env.Target + 4u
+            let loReg = env.Target + 5u
+            let hiReg = env.Target + 6u
+            let notSliceLabel = Util.genSymbol("notSliceLabel")
+            let successLabel = Util.genSymbol("success")
+            let failLabel = Util.genSymbol("fail")
+            let sliceLabel = Util.genSymbol("sliceDone")
+            let elemLoadCode =
+                match node.Type with
+                | t when (isSubtypeOf node.Env t TFloat) ->
+                    Asm(RV.FLW_S(FPReg.r(env.FPTarget), Imm12(0), Reg.r(elemAddrReg)),
+                        "Load float array element into fp target")
+                | _ ->
+                    Asm(RV.LW(Reg.r(targetReg), Imm12(0), Reg.r(elemAddrReg)),
+                        "Load array element into target reg")
+            //compile array into target
+            (doCodegen env array)
+            // 
+                .AddText([
+                    (RV.MV(Reg.r(arrayReg), Reg.r(targetReg)), "copy array object pointer")
+                    (RV.LI(Reg.r(sliceMarkerReg), -1), "")
+                    (RV.LW(Reg.r(sizeReg), Imm12(0), Reg.r(arrayReg)), "load first word of array/slice object")
+                ])
+            ++ (doCodegen env index)
+                .AddText([
+                    (RV.BNE(Reg.r(sliceMarkerReg), Reg.r(sizeReg), notSliceLabel), "branch if not slice (first word not slice marker)")
+                    (RV.LW(Reg.r(baseAdrrReg), Imm12(4), Reg.r(arrayReg)), "get the base addr of target slice")
+                    (RV.LW(Reg.r(loReg), Imm12(8), Reg.r(arrayReg)), "get lower bound of target slice")
+                    (RV.LW(Reg.r(hiReg), Imm12(12), Reg.r(arrayReg)), "get upper bound of target slice")
+                    (RV.SUB(Reg.r(sizeReg), Reg.r(hiReg), Reg.r(loReg)), "compute slice length difference")
+                    (RV.BGT(Reg.r(targetReg), Reg.r(sizeReg), failLabel), "Fail if out of bounds")
+                    (RV.ADD(Reg.r(targetReg), Reg.r(targetReg), Reg.r(loReg)), "offset index if slice")
+                    (RV.J(sliceLabel), "")
+                    (RV.LABEL(notSliceLabel), "")
+                    (RV.MV(Reg.r(baseAdrrReg), Reg.r(arrayReg)), "use raw array base address")
+                    (RV.LABEL(sliceLabel), "")
+                    (RV.LW(Reg.r(sizeReg), Imm12(0), Reg.r(baseAdrrReg)), "get size of array")
+                    (RV.ADDI(Reg.r(sizeReg), Reg.r(sizeReg), Imm12(-1)), "max index is size - 1")
+                    (RV.BGT(Reg.r(targetReg), Reg.r(sizeReg), failLabel), "Fail if out of bounds")
+                    (RV.BLTZ(Reg.r(targetReg), failLabel), "Fail if out of bounds")
+                    (RV.LI(Reg.r(elemAddrReg), 4), "")
+                    (RV.MUL(Reg.r(elemAddrReg), Reg.r(elemAddrReg), Reg.r(targetReg)), "Calculate byte offset")
+                    (RV.ADD(Reg.r(elemAddrReg), Reg.r(elemAddrReg), Reg.r(baseAdrrReg)), "calculate address to array header")
+                    (RV.ADDI(Reg.r(elemAddrReg), Reg.r(elemAddrReg), Imm12(4)), "skip header to first element")
+                ])
+            ++ elemLoadCode
+                .AddText([
+                    (RV.J(successLabel), "Jump to success")
+                    (RV.LABEL(failLabel), "")
+                    (RV.LI(Reg.a7, 93), "RARS syscall: Exit2")
+                    (RV.LI(Reg.a0, 1), "Corrupt array address or index out of bounds")
+                    (RV.ECALL, "")
+                    (RV.LABEL(successLabel), "")
+                ])
 
     | ArrayLength(array) ->
         /// Compile array expression to get pointer in target
         let arrayCode = doCodegen env array
-        /// Load length from offset 0
+        let markerReg = env.Target + 1u
+        let hiReg = env.Target + 2u
+        let loReg = env.Target + 3u
+        let markerConstReg = env.Target + 4u
+        let rawLabel = Util.genSymbol("array_length_raw")
+        let endLabel = Util.genSymbol("array_length_end")
+
         let lengthCode =
-            Asm(RV.LW(Reg.r(env.Target), Imm12(0), Reg.r(env.Target)),
-                "Load array length from offset 0")
-        
+            Asm(RV.LI(Reg.r(markerConstReg), -1),
+                "Load slice marker constant")
+              .AddText([
+                (RV.LW(Reg.r(markerReg), Imm12(0), Reg.r(env.Target)), "Load first word of array/slice object")
+                (RV.BNE(Reg.r(markerReg), Reg.r(markerConstReg), rawLabel), "If not slice, use raw array length")
+                (RV.LW(Reg.r(hiReg), Imm12(12), Reg.r(env.Target)), "Load slice hi")
+                (RV.LW(Reg.r(loReg), Imm12(8), Reg.r(env.Target)), "Load slice lo")
+                (RV.SUB(Reg.r(env.Target), Reg.r(hiReg), Reg.r(loReg)), "Compute hi - lo")
+                (RV.ADDI(Reg.r(env.Target), Reg.r(env.Target), Imm12(1)), "Convert inclusive bounds to length")
+                (RV.J(endLabel), "Jump to end after slice length")
+                (RV.LABEL(rawLabel), "")
+                (RV.MV(Reg.r(env.Target), Reg.r(markerReg)), "Use raw array length")
+                (RV.LABEL(endLabel), "")
+              ])
+
         arrayCode ++ lengthCode
+
+    | Slice(arr, lo, hi) ->
+            let targetReg = env.Target
+            let loReg = env.Target + 1u
+            let hiReg = env.Target + 2u
+            let baseArraySizeReg = env.Target + 3u 
+            let baseArrayAdrrReg = env.Target + 4u 
+            let sliceMarkerReg = env.Target + 5u
+            let successLabel = Util.genSymbol("success")
+            let failLabel = Util.genSymbol("fail")
+            //compile array into target
+            (doCodegen env arr)
+            // 
+                .AddText([
+                    (RV.MV(Reg.r(baseArrayAdrrReg), Reg.r(targetReg)), "copy the base addr of target array")
+                ])
+            ++ (doCodegen env lo)
+                .AddText([
+                    (RV.ADDI(Reg.r(baseArraySizeReg), Reg.r(baseArraySizeReg), Imm12(-1)), "max index is size - 1")
+                    (RV.LW(Reg.r(baseArraySizeReg), Imm12(0), Reg.r(baseArrayAdrrReg)), "get size of array")
+                    (RV.BGT(Reg.r(targetReg), Reg.r(baseArraySizeReg), failLabel), "Fail if out of bounds")
+                    (RV.BLTZ(Reg.r(targetReg), failLabel), "Fail if out of bounds")
+                    (RV.MV(Reg.r(loReg), Reg.r(targetReg)), "Keep the lo value")
+                ])
+            ++ (doCodegen env hi)
+                .AddText([
+                    (RV.BGT(Reg.r(targetReg), Reg.r(baseArraySizeReg), failLabel), "Fail if out of bounds")
+                    (RV.BLT(Reg.r(targetReg), Reg.r(loReg), failLabel), "Fail if hi is lt lo")
+                    (RV.MV(Reg.r(hiReg), Reg.r(targetReg)), "Keep the hi value")
+                ])
+            ++ (beforeSysCall [Reg.a0] [])
+                    .AddText([
+                (RV.LI(Reg.a0, 16), "Bytes for slice")
+                (RV.LI(Reg.a7, 9), "RARS syscall: Sbrk")
+                (RV.ECALL, "")
+                //store slice address in a0
+                (RV.LI(Reg.r(sliceMarkerReg),-1),"Mark slice object with -1 at offset 0")
+                (RV.SW(Reg.r(sliceMarkerReg),Imm12(0), Reg.a0),"Store slice marker at offset 0")
+                (RV.SW(Reg.r(baseArrayAdrrReg),Imm12(4), Reg.a0),"Store base array address in slice object")
+                (RV.SW(Reg.r(loReg),Imm12(8), Reg.a0),"Store slice lower bound at offset 8")
+                (RV.SW(Reg.r(hiReg),Imm12(12), Reg.a0),"Store slice upper bound at offset 12")
+                (RV.MV(Reg.r(targetReg), Reg.a0), "keep slice the mem address")
+                ])
+            ++ (afterSysCall [Reg.a0] [])
+                .AddText([
+                    (RV.J(successLabel), "Jump to success")
+                    (RV.LABEL(failLabel), "")
+                    (RV.LI(Reg.a7, 93), "RARS syscall: Exit2")
+                    (RV.LI(Reg.a0, 1), "Corrupt array address or slice boundaries out of bounds")
+                    (RV.ECALL, "")
+                    (RV.LABEL(successLabel), "")
+                ])
 
     | Copy(target) -> 
         let targetCode = doCodegen env target

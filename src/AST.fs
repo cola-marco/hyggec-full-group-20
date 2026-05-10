@@ -201,6 +201,15 @@ and Expr<'E,'T> =
     | Let of name: string
            * init: Node<'E,'T>
            * scope: Node<'E,'T>
+           
+    /// LetRec-binder, used to introduce a recursive variable with the given 'name' in a
+    /// 'scope' where its own name is available (i.e. it can call itself recursively).
+    /// The variable is initialised with the result of the expression
+    /// in 'init'.
+    | LetRec of name: string
+            * tpe: PretypeNode
+            * init: Node<'E,'T>
+            * scope: Node<'E,'T>
 
     /// Let-binder with explicit type annotation, used to introduce a variable
     /// with the given 'name' and pretype ('tpe') in a 'scope'.  The variable is
@@ -292,9 +301,17 @@ and Expr<'E,'T> =
     | ArrayElem of name: Node<'E,'T>
                  * index: Node<'E,'T>
 
-    /// Array element accessor. 
-    /// Takes the identifier of the array and the index of the element to be accessed
+    /// Array length getter
+    /// Takes the identifier of the array
     | ArrayLength of name: Node<'E,'T>
+
+    /// Slice expression
+    /// Takes array to slice, lo and hi indeces
+    | Slice of baseArray: Node<'E, 'T>
+             * lo: Node<'E, 'T>
+             * hi: Node<'E, 'T>
+
+
 
 
 /// A type alias for an untyped AST, where there is no typing environment nor

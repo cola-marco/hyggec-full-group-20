@@ -208,6 +208,9 @@ let rec isSubtypeOf (env: TypingEnv) (t1: Type) (t2: Type): bool =
         args1.Length = args2.Length
         && List.forall2 (fun t1 t2 -> isSubtypeOf env t1 t2 && isSubtypeOf env t2 t1) args1 args2
         && isSubtypeOf env ret1 ret2
+    | (t2, TArray(t1)) when t1 = t2 -> true
+    | (TArray(t1), t2) when t1 = t2 -> true
+    | (TArray(t1), TArray(t2)) when t1 = t2 -> true
     | (_, _) -> false
 
 /// Compute the least upper bound (LUB) of two types, if it exists.
@@ -537,6 +540,9 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
 
     | Let(name, init, scope) ->
         letTyper node.Pos env name init scope false
+   
+    | LetRec(name, tpe, init, scope) ->
+        letRecTypeAnnotTyper node.Pos env name tpe init scope
 
     | LetT(name, tpe, init, scope) ->
         letTypeAnnotTyper node.Pos env name tpe init scope
@@ -555,10 +561,14 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
                 else
                     Error([(node.Pos,
                             $"assignment to non-mutable variable %s{name}")])
-            | FieldSelect(_, _)
-            | ArrayElem(_, _) ->
+            | FieldSelect(_, _)  ->
                 Ok { Pos = node.Pos; Env = env; Type = ttarget.Type;
                      Expr = Assign(ttarget, texpr) }
+            | ArrayElem(_,index) ->
+                if (isSubtypeOf env index.Type TInt) then 
+                    Ok { Pos = node.Pos; Env = env; Type = ttarget.Type;
+                        Expr = Assign(ttarget, texpr) }
+                else Error([(node.Pos, "invalid index expression type")])
             | _ -> Error([(node.Pos, "invalid assignment target")])
         | (Ok(ttarget), Ok(texpr)) ->
             Error([(texpr.Pos,
@@ -869,9 +879,26 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
                     if not (isSubtypeOf env tindex.Type TInt) then
                         Error([(index.Pos, $"array index must be integer, found %O{tindex.Type}")])
                     else
-                        Ok { Pos = node.Pos; Env = env; Type = elemType; Expr = ArrayElem(tarray, tindex) }
+                        Ok { Pos = node.Pos; Env = env; Type = TArray(elemType); Expr = ArrayElem(tarray, tindex) }
                 | _ -> Error([(array.Pos, $"expected array type, found %O{tarray.Type}")])
             | _ -> Error([(array.Pos, "arrayElem expects an array variable")])
+    | Slice(baseArray, lo, hi) ->
+        let baseArrayTyping = typer env baseArray
+        let loTyping = typer env lo 
+        let hiTyping = typer env hi 
+        let errs = collectErrors [baseArrayTyping;loTyping;hiTyping]
+        if not errs.IsEmpty then Error(errs)
+        else 
+            let tbaseArray = getOkValue baseArrayTyping
+            let tlo = getOkValue loTyping 
+            let thi = getOkValue hiTyping 
+            match tbaseArray.Expr with
+            | Var(_) ->
+                match (expandType env tbaseArray.Type) with
+                | TArray(elemType) when (isSubtypeOf env tlo.Type TInt) && (isSubtypeOf env thi.Type TInt) ->
+                    Ok { Pos = node.Pos; Env = env; Type = TArray(elemType); Expr = Slice(tbaseArray, tlo, thi) }
+                | _ -> Error([(baseArray.Pos, $"expected array type, found %O{tbaseArray.Type}")])
+            | _ -> Error([(baseArray.Pos, "Slice expects an array variable and integer indeces")])
 
 
 /// Compute the typing of a binary numerical operation, by computing and
@@ -1027,7 +1054,38 @@ and internal letTypeAnnotTyper pos (env: TypingEnv) (name: string)
                     | Error(es) -> Error(es)
         | Error(es) -> Error(es)
     | Error(es) -> Error(es)
-
+and internal letRecTypeAnnotTyper pos (env: TypingEnv) (name: string) // [T-LetRec]
+                               (tannot: PretypeNode) (init: UntypedAST)
+                               (scope: UntypedAST): TypingResult =
+    match (resolvePretype env tannot) with
+    | Ok(letVariableType) ->
+        /// Variables and types to type-check the 'let...' scope: we
+        /// add the newly-declared variable and its type (obtained
+        /// fron the resolved type annotation) to the typing
+        /// environment
+        let envVars2 = env.Vars.Add(name, letVariableType)
+        /// Mutable variables in the 'let...' scope: since we are
+        /// declaring an immutable variable, we remove it from the
+        /// known mutables variables (if present).
+        let envMutVars2 = env.Mutables.Remove(name)
+        /// Environment for type-checking the 'let...' scope
+        let env2 = { env with Vars = envVars2
+                              Mutables = envMutVars2 }
+        match (typer env2 init) with
+        | Ok(tinit) ->
+            if not (isSubtypeOf env tinit.Type letVariableType) //I think the typing rule says this should still be env, and not env2
+                then Error [(pos, $"variable '%s{name}' of type %O{letVariableType} "
+                                  + $"initialized with expression of incompatible type %O{tinit.Type}")]
+                else
+                    match (typer env2 scope) with // Recursively type the scope
+                    | Ok(tscope) ->
+                        /// Typed "let" expression to be returned
+                        let tLetExpr = LetRec(name, tannot, tinit, tscope) 
+                        Ok { Pos = pos; Env = env2; Type = tscope.Type
+                             Expr = tLetExpr }
+                    | Error(es) -> Error(es)
+        | Error(es) -> Error(es)
+    | Error(es) -> Error(es)
 
 /// Perform type checking of the given untyped AST.  Return a well-typed AST in
 /// case of success, or a sequence of error messages in case of failure.

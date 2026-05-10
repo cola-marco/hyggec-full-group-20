@@ -1,0 +1,9 @@
+rec fun factorial(n: int): int = {
+	if (n <= 1) then 1 else {let n1 = n - 1; n * factorial(n1)}
+};
+let f0 = factorial(0);
+assert(f0 = 1);
+let f3 = factorial(3);
+assert(f3 = 6);
+let f4 = factorial(4);
+assert(f4 = 24)
