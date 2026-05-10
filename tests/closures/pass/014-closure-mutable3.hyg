@@ -1,0 +1,33 @@
+type Counters = struct {
+    f1: () -> int;
+    f2: () -> int
+};
+
+// Return a structure with two functions sharing one mutable counter
+let makeCounters = fun () -> {
+    let mutable x = 0;
+
+    struct {
+        f1 = fun () ->
+            x <- x + 1;
+
+        f2 = fun () ->
+            x <- x + 1
+    } 
+};
+
+let c1 = makeCounters();
+let c2 = makeCounters();
+
+// c1 shares its own counter
+assert(c1.f1() = 1);
+assert(c1.f2() = 2);
+assert(c1.f1() = 3);
+
+// c2 have a completely separate counter
+assert(c2.f2() = 1);
+assert(c2.f1() = 2);
+assert(c2.f2() = 3);
+
+// c1 still continues from its own state
+assert(c1.f2() = 4)

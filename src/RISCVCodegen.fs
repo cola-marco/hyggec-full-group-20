@@ -51,6 +51,49 @@ type internal CodegenEnv = {
     VarStorage: Map<string, Storage>
 }
 
+let rec internal isCV (varName, (scope: Node<'a,'b>)) =
+    match scope.Expr with
+    | Lambda(args, body) ->
+        if List.exists (fun (name, _) -> name = varName) args then false
+        else isCV(varName, body)
+    | Var(name) -> name = varName
+    | UnitVal | BoolVal(_) | IntVal(_) | FloatVal(_) | StringVal(_) | Pointer(_) -> false
+    | Let(name, init, scope) | LetT(name, _, init, scope) | LetMut(name, init, scope) ->
+        let cvInit = isCV(varName, init)
+        let cvScope = if name = varName then false else isCV(varName, scope)
+        cvInit || cvScope
+    | BinNumOp(_, lhs, rhs) | BinLogicOp(_, lhs, rhs) | BinRelOp(_, lhs, rhs) ->
+        isCV(varName, lhs) || isCV(varName, rhs)
+    | Sqrt(arg) | Not(arg) | Print(arg) | PrintLn(arg) | Assertion(arg)
+    | Ascription(_, arg) | UnionCons(_, arg) | ArrayLength(arg) | Copy(arg) | DeepCopy(arg) ->
+        isCV(varName, arg)
+    | If(cond, ifTrue, ifFalse) ->
+        isCV(varName, cond) || isCV(varName, ifTrue) || isCV(varName, ifFalse)
+    | Seq(nodes) ->
+        List.exists (fun n -> isCV(varName, n)) nodes
+    | Type(_, _, scope) ->
+        isCV(varName, scope)
+    | While(cond, body) | DoWhile(body, cond) | ArrayCons(cond, body) ->
+        isCV(varName, cond) || isCV(varName, body)
+    | For(name, init, cond, step, body) ->
+        isCV(varName, init) ||
+        if name = varName then false
+        else isCV(varName, cond) || isCV(varName, step) || isCV(varName, body)
+    | Application(expr, args) ->
+        isCV(varName, expr) || List.exists (fun a -> isCV(varName, a)) args
+    | StructCons(fields) ->
+        List.exists (fun (_, n) -> isCV(varName, n)) fields
+    | FieldSelect(target, _) ->
+        isCV(varName, target)
+    | Assign(target, expr) ->
+        isCV(varName, target) || isCV(varName, expr)
+    | Match(expr, cases) ->
+        isCV(varName, expr) || List.exists (fun (_, v, cont) ->
+            if v = varName then false else isCV(varName, cont)) cases
+    | ArrayElem(name, index) ->
+        isCV(varName, name) || isCV(varName, index)
+    | ReadInt | ReadFloat -> false
+
 
 /// Code generation function: compile the expression in the given AST node so
 /// that it writes its results on the 'Target' and 'FPTarget' generic register
@@ -563,12 +606,12 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
                 env.VarStorage.Add(name, Storage.FPReg(FPReg.r(env.FPTarget)))
             /// Environment for compiling the 'let' scope
             let scopeEnv = { env with FPTarget = scopeTarget
-                                      VarStorage = scopeVarStorage }
+                                                 VarStorage = scopeVarStorage }
             initCode
                 ++ (doCodegen scopeEnv scope)
                     .AddText(RV.FMV_S(FPReg.r(env.FPTarget),
-                                      FPReg.r(scopeTarget)),
-                             "Move result of 'let' scope expression into target register")
+                                    FPReg.r(scopeTarget)),
+                            "Move result of 'let' scope expression into target register")
         | _ ->  // Default case for integer-like initialisation expressions
             /// Target register for compiling the 'let' scope
             let scopeTarget = env.Target + 1u
@@ -577,11 +620,11 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
                 env.VarStorage.Add(name, Storage.Reg(Reg.r(env.Target)))
             /// Environment for compiling the 'let' scope
             let scopeEnv = { env with Target = scopeTarget
-                                      VarStorage = scopeVarStorage }
+                                               VarStorage = scopeVarStorage }
             initCode
                 ++ (doCodegen scopeEnv scope)
                     .AddText(RV.MV(Reg.r(env.Target), Reg.r(scopeTarget)),
-                             "Move 'let' scope result to 'let' target register")
+                            "Move 'let' scope result to 'let' target register")
 
     | Assign(lhs, rhs) ->
         match lhs.Expr with

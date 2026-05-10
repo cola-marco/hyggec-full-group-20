@@ -76,7 +76,6 @@ type internal RuntimeEnv<'E,'T> = {
           + $"%s{Util.nl}  - PtrInfo: %s{ptrInfoStr}"
 
 
-
 /// Attempt to reduce the given AST node by one step, using the given runtime
 /// environment.  If a reduction is possible, return the reduced node and an
 /// updated runtime environment; otherwise, return None.
