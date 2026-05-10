@@ -926,7 +926,7 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
         // Extract the tag from the type of this UnionCons node
         let tag =
             match node.Type with
-            | TUnion([{ Label = l; Tag = t; CaseType = _ }]) when l = label -> t
+            | TUnion([{ Label = l; Tag = t; CaseType = _ }]) when l = label -> Util.genSymbolId(label)
             | _ ->
                 failwith $"BUG: expected single-case union type for UnionCons %s{label}"
 

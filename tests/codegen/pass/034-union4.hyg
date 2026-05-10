@@ -1,0 +1,16 @@
+type Expr = union {
+    Value: int;
+    Add: struct { left: int; right: int };
+    Multiply: struct { left: int; right: int }
+};
+
+fun eval(e: Expr): int =
+    match e with {
+        Value{x} -> x;
+        Add{a} -> a.left + a.right;
+        Multiply{m} -> m.left * m.right
+    };
+
+assert(eval(Value{7}) = 7);
+assert(eval(Add{struct { left = 3; right = 4 }}) = 7);
+assert(eval(Multiply{struct { left = 3; right = 5 }}) = 15)

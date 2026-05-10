@@ -1,0 +1,16 @@
+type Employee = union {
+    Manager: struct { name: string; teamSize: int };
+    Developer: struct { name: string; language: string };
+    Intern: struct { name: string }
+};
+
+fun getLevel(e: Employee): int =
+    match e with {
+        Manager{m} -> m.teamSize;
+        Developer{_} -> 2;
+        Intern{_} -> 1
+    };
+
+assert(getLevel(Manager{struct { name = "Alice"; teamSize = 5 }}) = 5);
+assert(getLevel(Developer{struct { name = "Bob"; language = "F#" }}) = 2);
+assert(getLevel(Intern{struct { name = "Charlie" }}) = 1)
