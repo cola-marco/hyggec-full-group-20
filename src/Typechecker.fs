@@ -536,6 +536,9 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
 
     | Let(name, init, scope) ->
         letTyper node.Pos env name init scope false
+   
+    | LetRec(name, tpe, init, scope) ->
+        letRecTypeAnnotTyper node.Pos env name tpe init scope
 
     | LetT(name, tpe, init, scope) ->
         letTypeAnnotTyper node.Pos env name tpe init scope
@@ -1047,7 +1050,38 @@ and internal letTypeAnnotTyper pos (env: TypingEnv) (name: string)
                     | Error(es) -> Error(es)
         | Error(es) -> Error(es)
     | Error(es) -> Error(es)
-
+and internal letRecTypeAnnotTyper pos (env: TypingEnv) (name: string) // [T-LetRec]
+                               (tannot: PretypeNode) (init: UntypedAST)
+                               (scope: UntypedAST): TypingResult =
+    match (resolvePretype env tannot) with
+    | Ok(letVariableType) ->
+        /// Variables and types to type-check the 'let...' scope: we
+        /// add the newly-declared variable and its type (obtained
+        /// fron the resolved type annotation) to the typing
+        /// environment
+        let envVars2 = env.Vars.Add(name, letVariableType)
+        /// Mutable variables in the 'let...' scope: since we are
+        /// declaring an immutable variable, we remove it from the
+        /// known mutables variables (if present).
+        let envMutVars2 = env.Mutables.Remove(name)
+        /// Environment for type-checking the 'let...' scope
+        let env2 = { env with Vars = envVars2
+                              Mutables = envMutVars2 }
+        match (typer env2 init) with
+        | Ok(tinit) ->
+            if not (isSubtypeOf env tinit.Type letVariableType) //I think the typing rule says this should still be env, and not env2
+                then Error [(pos, $"variable '%s{name}' of type %O{letVariableType} "
+                                  + $"initialized with expression of incompatible type %O{tinit.Type}")]
+                else
+                    match (typer env2 scope) with // Recursively type the scope
+                    | Ok(tscope) ->
+                        /// Typed "let" expression to be returned
+                        let tLetExpr = LetRec(name, tannot, tinit, tscope) 
+                        Ok { Pos = pos; Env = env2; Type = tscope.Type
+                             Expr = tLetExpr }
+                    | Error(es) -> Error(es)
+        | Error(es) -> Error(es)
+    | Error(es) -> Error(es)
 
 /// Perform type checking of the given untyped AST.  Return a well-typed AST in
 /// case of success, or a sequence of error messages in case of failure.

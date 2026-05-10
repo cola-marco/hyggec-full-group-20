@@ -1,0 +1,2 @@
+rec fun f(x: int): int = f(x + 1);
+f(0)

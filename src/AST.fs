@@ -201,6 +201,15 @@ and Expr<'E,'T> =
     | Let of name: string
            * init: Node<'E,'T>
            * scope: Node<'E,'T>
+           
+    /// LetRec-binder, used to introduce a recursive variable with the given 'name' in a
+    /// 'scope' where its own name is available (i.e. it can call itself recursively).
+    /// The variable is initialised with the result of the expression
+    /// in 'init'.
+    | LetRec of name: string
+            * tpe: PretypeNode
+            * init: Node<'E,'T>
+            * scope: Node<'E,'T>
 
     /// Let-binder with explicit type annotation, used to introduce a variable
     /// with the given 'name' and pretype ('tpe') in a 'scope'.  The variable is

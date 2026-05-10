@@ -512,6 +512,34 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
     // 'Let...' declares 'name' as a Lambda expression with a TFun type
     | Let(name, {Node.Expr = Lambda(args, body);
                  Node.Type = TFun(targs, _)}, scope)
+    | LetRec(name, _, {Node.Expr = Lambda(args, body);
+                     Node.Type = TFun(targs, _)}, scope) ->
+        /// Assembly label to mark the position of the compiled function body.
+        /// For readability, we make the label similar to the function name
+        let funLabel = Util.genSymbol $"fun_%s{name}"
+
+        /// Names of the lambda term arguments
+        let (argNames, _) = List.unzip args
+        /// List of pairs associating each function argument to its type
+        let argNamesTypes = List.zip argNames targs
+        /// New env with function label available
+        let env2 = {env with VarStorage = env.VarStorage.Add(name, Storage.Label(funLabel))}
+        /// Compiled function body with Storage info where the name of the compiled function points to the
+        /// label 'funLabel'
+        let bodyCode = compileFunction argNamesTypes body env2
+
+        /// Compiled function code where the function label is located just
+        /// before the 'bodyCode', and everything is placed at the end of the
+        /// Text segment (i.e. in the "PostText")
+        let funCode =
+            (Asm(RV.LABEL(funLabel), $"Code for function '%s{name}'")
+                ++ bodyCode).TextToPostText
+
+        // Finally, compile the 'let...'' scope with the newly-defined function
+        // label in the variables storage, and append the 'funCode' above. The
+        // 'scope' code leaves its result in the 'let...' target register
+        (doCodegen env2 scope)
+            ++ funCode
     | LetT(name, _, {Node.Expr = Lambda(args, body);
                      Node.Type = TFun(targs, _)}, scope) ->
         /// Assembly label to mark the position of the compiled function body.

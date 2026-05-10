@@ -755,6 +755,26 @@ let pLetMut =
                 mkNode (AST.Expr.LetMut (name, init, scope))
                        tok.Begin tok.Begin scope.Pos.End
 
+///<summary>
+/// Parse a recursive <c>rec</c> binding.
+/// </summary>                   
+let pLetRec =
+    pToken REC >>- pToken FUN ->>- pIdent ->>-
+        pParenIdentTypesCommaSeq ->>-
+        (pToken COLON >>- pPretype) ->>-
+        (pToken EQ >>- pSimpleExpr) ->>-
+        (pToken SEMI >>- pExpr)
+            |>> fun (((((tok, (_, name)), args), retType), body), scope) ->
+                let argTypes = List.map snd args
+                let funPretype = AST.Pretype.TFun (argTypes, retType)
+                let funPretypeNode = mkPretypeNode funPretype
+                                                   tok.Begin tok.Begin retType.Pos.End
+                let lambda = mkNode (AST.Expr.Lambda (args, body))
+                                    tok.Begin tok.Begin body.Pos.End
+                mkNode (AST.Expr.LetRec (name, funPretypeNode, lambda, scope))
+                       tok.Begin tok.Begin scope.Pos.End
+                       
+
 
 /// Parse any Hygge expression.
 let pExpr' = choice [
@@ -775,6 +795,7 @@ let pExpr' = choice [
                                     tok.Begin tok.Begin body.Pos.End
                 mkNode (AST.Expr.LetT (name, funPretypeNode, lambda, scope))
                        tok.Begin tok.Begin scope.Pos.End
+    pLetRec
     pLetMut
     pLetT
     pLet
