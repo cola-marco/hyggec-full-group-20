@@ -1,0 +1,23 @@
+type Result = union {
+    Ok: int;
+    Error: string
+};
+
+type MaybeResult = union {
+    HasValue: Result;
+    Empty: unit
+};
+
+fun unwrap(m: MaybeResult): int =
+    match m with {
+        HasValue{r} ->
+            match r with {
+                Ok{x} -> x;
+                Error{_} -> 1
+            };
+        Empty{_} -> 0
+    };
+
+assert(unwrap(HasValue{Ok{42}}) = 42);
+assert(unwrap(HasValue{Error{"fail"}}) = 1);
+assert(unwrap(Empty{()}) = 0)

@@ -158,7 +158,7 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
         let substArr= subst arr var sub
         let substIndex= subst index var sub
         {node with Expr = ArrayElem(substArr, substIndex)}    
-    | IncDec(op, name) -> failwith "Not Implemented"
+    | IncDec(op, name) -> node
     
     | Slice(arr, lo, hi) ->
         let substArr = subst arr var sub 

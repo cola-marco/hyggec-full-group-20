@@ -51,49 +51,6 @@ type internal CodegenEnv = {
     VarStorage: Map<string, Storage>
 }
 
-let rec internal isCV (varName, (scope: Node<'a,'b>)) =
-    match scope.Expr with
-    | Lambda(args, body) ->
-        if List.exists (fun (name, _) -> name = varName) args then false
-        else isCV(varName, body)
-    | Var(name) -> name = varName
-    | UnitVal | BoolVal(_) | IntVal(_) | FloatVal(_) | StringVal(_) | Pointer(_) -> false
-    | Let(name, init, scope) | LetT(name, _, init, scope) | LetMut(name, init, scope) ->
-        let cvInit = isCV(varName, init)
-        let cvScope = if name = varName then false else isCV(varName, scope)
-        cvInit || cvScope
-    | BinNumOp(_, lhs, rhs) | BinLogicOp(_, lhs, rhs) | BinRelOp(_, lhs, rhs) ->
-        isCV(varName, lhs) || isCV(varName, rhs)
-    | Sqrt(arg) | Not(arg) | Print(arg) | PrintLn(arg) | Assertion(arg)
-    | Ascription(_, arg) | UnionCons(_, arg) | ArrayLength(arg) | Copy(arg) | DeepCopy(arg) ->
-        isCV(varName, arg)
-    | If(cond, ifTrue, ifFalse) ->
-        isCV(varName, cond) || isCV(varName, ifTrue) || isCV(varName, ifFalse)
-    | Seq(nodes) ->
-        List.exists (fun n -> isCV(varName, n)) nodes
-    | Type(_, _, scope) ->
-        isCV(varName, scope)
-    | While(cond, body) | DoWhile(body, cond) | ArrayCons(cond, body) ->
-        isCV(varName, cond) || isCV(varName, body)
-    | For(name, init, cond, step, body) ->
-        isCV(varName, init) ||
-        if name = varName then false
-        else isCV(varName, cond) || isCV(varName, step) || isCV(varName, body)
-    | Application(expr, args) ->
-        isCV(varName, expr) || List.exists (fun a -> isCV(varName, a)) args
-    | StructCons(fields) ->
-        List.exists (fun (_, n) -> isCV(varName, n)) fields
-    | FieldSelect(target, _) ->
-        isCV(varName, target)
-    | Assign(target, expr) ->
-        isCV(varName, target) || isCV(varName, expr)
-    | Match(expr, cases) ->
-        isCV(varName, expr) || List.exists (fun (_, v, cont) ->
-            if v = varName then false else isCV(varName, cont)) cases
-    | ArrayElem(name, index) ->
-        isCV(varName, name) || isCV(varName, index)
-    | ReadInt | ReadFloat -> false
-
 
 /// Code generation function: compile the expression in the given AST node so
 /// that it writes its results on the 'Target' and 'FPTarget' generic register
@@ -1233,6 +1190,170 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
 
         // Put everything together: compile the target, access the field
         selTargetCode ++ fieldAccessCode
+
+    | UnionCons(label, expr) ->
+        // Allocate 2 words on the heap:
+        //   word 0 = integer tag
+        //   word 1 = payload value
+        let unionAllocCode =
+            (beforeSysCall [Reg.a0] [])
+                .AddText([
+                    (RV.LI(Reg.a0, 8),
+                    "Allocate 2 words (tag + payload) for union value")
+                    (RV.LI(Reg.a7, 9),
+                    "RARS syscall: Sbrk")
+                    (RV.ECALL, "")
+                    (RV.MV(Reg.r(env.Target), Reg.a0),
+                    "Move allocated union address to target")
+                ])
+                ++ (afterSysCall [Reg.a0] [])
+
+        // Extract the tag from the type of this UnionCons node
+        let tag =
+            match node.Type with
+            | TUnion([l, _]) when l = label -> Util.genSymbolId(label)
+            | _ ->
+                failwith $"BUG: expected single-case union type for UnionCons %s{label}"
+
+        // Store the integer tag in word 0
+        let storeTagCode =
+            Asm(
+                RV.LI(Reg.r(env.Target + 2u), tag),
+                $"Load union tag for label '%s{label}'"
+            )
+            ++
+            Asm(
+                RV.SW(Reg.r(env.Target + 2u), Imm12(0), Reg.r(env.Target)),
+                "Store union tag at offset 0"
+            )
+
+        // Compile the payload expression
+        let exprCode =
+            doCodegen { env with Target = env.Target + 1u } expr
+
+        // Store the payload in word 1 (offset 4)
+        let storePayloadCode =
+            match expr.Type with
+            | t when (isSubtypeOf expr.Env t TUnit) ->
+                Asm() // no payload to store
+
+            | t when (isSubtypeOf expr.Env t TFloat) ->
+                Asm(
+                    RV.FSW_S(FPReg.r(env.FPTarget), Imm12(4), Reg.r(env.Target)),
+                    "Store union payload (float) at offset 4"
+                )
+
+            | _ ->
+                Asm(
+                    RV.SW(Reg.r(env.Target + 1u), Imm12(4), Reg.r(env.Target)),
+                    "Store union payload at offset 4"
+                )
+
+        // Final result:
+        // target register contains pointer to union object
+        unionAllocCode
+        ++ exprCode
+        ++ storeTagCode
+        ++ storePayloadCode
+
+    | Match(expr, cases) ->
+        // Compile the expression being matched
+        //   offset 0 -> tag
+        //   offset 4 -> payload
+        let exprCode = doCodegen env expr
+
+        /// Save the union pointer before loading the tag
+        let unionPtrReg = env.Target + 1u
+        let savePtrCode =
+            Asm(
+                RV.MV(Reg.r(unionPtrReg), Reg.r(env.Target)),
+                "Save union pointer of matched expression"
+            )
+
+        /// Load the runtime tag from heap
+        let loadTagCode =
+            Asm(
+                RV.LW(Reg.r(env.Target), Imm12(0), Reg.r(env.Target)),
+                "Load union tag from matched expression"
+            )
+
+        /// Final label after the whole pattern match
+        let endLabel = Util.genSymbol "match_end"
+
+        /// Generate code for one match branch
+        let folder (acc: Asm) ((label, varName, cont): string * string * TypedAST) =
+            /// Label to jump to if this case does NOT match
+            let nextCaseLabel = Util.genSymbol $"match_next_%s{label}"
+            let caseTag = Util.genSymbolId(label)
+
+            /// Load case tag for comparison
+            let loadCaseTagCode =
+                Asm(
+                    RV.LI(Reg.r(env.Target + 2u), caseTag),
+                    $"Load tag for case '%s{label}'"
+                )
+
+            /// If tags are different, jump to next case
+            let compareCode =
+                Asm(
+                    RV.BNE(Reg.r(env.Target), Reg.r(env.Target + 2u), nextCaseLabel),
+                    $"If tag != '%s{label}', skip this case"
+                )
+
+            /// Load payload from offset 4
+            let payloadLoadCode =
+                Asm(
+                    RV.LW(Reg.r(env.Target + 2u), Imm12(4), Reg.r(unionPtrReg)),
+                    $"Load payload for case '%s{label}'"
+                )
+
+            /// Extend environment with matched variable
+            let caseEnv =
+                {
+                    env with
+                        Target = env.Target
+                        VarStorage =
+                            env.VarStorage.Add(
+                                varName,
+                                Storage.Reg(Reg.r(env.Target + 2u))
+                            )
+                }
+
+            /// Continuation code for this branch
+            let contCode = 
+                (doCodegen caseEnv cont).AddText(
+                    RV.J(endLabel),
+                    "Jump to end of match"
+                )
+
+            acc
+            ++ loadCaseTagCode
+            ++ compareCode
+            ++ payloadLoadCode
+            ++ contCode
+                .AddText(RV.LABEL(nextCaseLabel))
+
+        /// Generate all branches
+        let casesCode =
+            List.fold folder (Asm()) cases
+
+        /// Final fallback
+        let failCode =
+            Asm(
+                RV.LI(Reg.a7, 10),
+                "Unexpected unmatched union tag"
+            )
+            ++
+            Asm(
+                RV.ECALL,
+                ""
+            )
+
+        exprCode
+        ++ savePtrCode
+        ++ casesCode
+        ++ failCode
+            .AddText(RV.LABEL(endLabel))
 
     | Pointer(_) ->
         failwith "BUG: pointers cannot be compiled (by design!)"
