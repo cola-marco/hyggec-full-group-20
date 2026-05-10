@@ -204,6 +204,10 @@ let rec isSubtypeOf (env: TypingEnv) (t1: Type) (t2: Type): bool =
             let map1 = Map.ofList cases1
             let map2 = Map.ofList cases2
             List.forall (fun l -> isSubtypeOf env map1.[l] map2.[l]) labels1
+    | (TFun(args1, ret1), TFun(args2, ret2)) ->
+        args1.Length = args2.Length
+        && List.forall2 (fun t1 t2 -> isSubtypeOf env t1 t2 && isSubtypeOf env t2 t1) args1 args2
+        && isSubtypeOf env ret1 ret2
     | (_, _) -> false
 
 /// Compute the least upper bound (LUB) of two types, if it exists.

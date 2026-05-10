@@ -1,0 +1,40 @@
+type OptionalInt = union {
+    Some: int;
+    None: unit
+};
+
+type Tree = union {
+    Leaf: OptionalInt;
+    Node: struct {
+        left: Tree;
+        right: Tree
+    }
+};
+
+fun maybeIncrement(o: OptionalInt): OptionalInt =
+    match o with {
+        Some{x} -> Some{x + 1};
+        None{_} -> None{()}
+    };
+
+fun mapTree(t: Tree): Tree =
+    match t with {
+        Leaf{o} -> Leaf{maybeIncrement(o)};
+        Node{p} -> Node{struct {
+            left = p.left;
+            right = p.right
+        }}
+    };
+
+let t = Leaf{Some{41}};
+
+let result = mapTree(t);
+
+assert(match result with {
+           Leaf{o} ->
+               match o with {
+                   Some{y} -> y = 42;
+                   None{_} -> false
+               };
+           Node{_} -> false
+       })
