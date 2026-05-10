@@ -167,114 +167,145 @@ let rec expandType (env: TypingEnv) (t: Type): Type =
 
 
 /// Check whether 't1' is subtype of 't2' in the typing environment 'env'.
-let rec isSubtypeOf (env: TypingEnv) (t1: Type) (t2: Type): bool =
-    match (t1, t2) with
-    | (t1, t2) when t1 = t2
-        -> true // Straightforward equality between types
-    | (TVar(name), t2) ->
-        // Expand the type variable; crash immediately if 'name' is not in 'env'
-        isSubtypeOf env (env.TypeVars.[name]) t2
-    | (t1, TVar(name)) ->
-        // Expand the type variable; crash immediately if 'name' is not in 'env'
-        isSubtypeOf env t1 (env.TypeVars.[name])
-    | (TStruct(fields1), TStruct(fields2)) ->
-        // A subtype struct must have at least the same fields of the supertype
-        if fields1.Length < fields2.Length then false
+let isSubtypeOf (env: TypingEnv) (t1: Type) (t2: Type): bool =
+    let rec go (seen: List<Type * Type>) (t1: Type) (t2: Type): bool =
+        if t1 = t2 then
+            true
+        elif List.contains (t1, t2) seen then
+            true
         else
-            /// First n fields of the subtype struct, where n is the number of
-            /// fields of the supertype struct: we only check whether these
-            /// fields are compatible (the subtype can have more fields)
-            let fields1' = fields1[0..(fields2.Length-1)]
-            let (fieldNames1, fieldTypes1) = List.unzip fields1'
-            let (fieldNames2, fieldTypes2) = List.unzip fields2
-            if (fieldNames1 <> fieldNames2) then false
-            else
-                List.forall2 (fun t1 t2 -> isSubtypeOf env t1 t2)
-                             fieldTypes1 fieldTypes2
-    | (TUnion(cases1), TUnion(cases2)) ->
-        /// Labels of the subtype union
-        let (labels1, _) = List.unzip cases1
-        /// Labels of the supertype union
-        let (labels2, _) = List.unzip cases2
-        // A subtype union must have a subset of the labels of the supertype
-        if not (Set.isSubset (Set(labels1)) (Set(labels2))) then false
-        else
-            // A label that appears in both the subtype and supertype unions
-            // must have a subtyped argument in the subtype union
-            let map1 = Map.ofList cases1
-            let map2 = Map.ofList cases2
-            List.forall (fun l -> isSubtypeOf env map1.[l] map2.[l]) labels1
-    | (TFun(args1, ret1), TFun(args2, ret2)) ->
-        args1.Length = args2.Length
-        && List.forall2 (fun t1 t2 -> isSubtypeOf env t1 t2 && isSubtypeOf env t2 t1) args1 args2
-        && isSubtypeOf env ret1 ret2
-    | (t2, TArray(t1)) when t1 = t2 -> true
-    | (TArray(t1), t2) when t1 = t2 -> true
-    | (TArray(t1), TArray(t2)) when t1 = t2 -> true
-    | (_, _) -> false
+            let seen = (t1, t2) :: seen
 
+            match (t1, t2) with
+            | (TVar(name), t2) ->
+                // Expand the type variable; crash immediately if 'name' is not in 'env'
+                go seen (env.TypeVars.[name]) t2
+
+            | (t1, TVar(name)) ->
+                // Expand the type variable; crash immediately if 'name' is not in 'env'
+                go seen t1 (env.TypeVars.[name])
+
+            | (TStruct(fields1), TStruct(fields2)) ->
+                // A subtype struct must have at least the same fields of the supertype
+                if fields1.Length < fields2.Length then
+                    false
+                else
+                    let fields1' = fields1[0..(fields2.Length-1)]
+                    let (fieldNames1, fieldTypes1) = List.unzip fields1'
+                    let (fieldNames2, fieldTypes2) = List.unzip fields2
+
+                    if fieldNames1 <> fieldNames2 then
+                        false
+                    else
+                        List.forall2
+                            (fun ft1 ft2 -> go seen ft1 ft2)
+                            fieldTypes1
+                            fieldTypes2
+
+            | (TUnion(cases1), TUnion(cases2)) ->
+                let (labels1, _) = List.unzip cases1
+                let (labels2, _) = List.unzip cases2
+
+                // A subtype union must have a subset of the labels of the supertype
+                if not (Set.isSubset (Set(labels1)) (Set(labels2))) then
+                    false
+                else
+                    let map1 = Map.ofList cases1
+                    let map2 = Map.ofList cases2
+
+                    List.forall
+                        (fun label -> go seen map1.[label] map2.[label])
+                        labels1
+
+            | (TFun(args1, ret1), TFun(args2, ret2)) ->
+                args1.Length = args2.Length
+                && List.forall2
+                    (fun a1 a2 -> go seen a1 a2 && go seen a2 a1)
+                    args1
+                    args2
+                && go seen ret1 ret2
+
+            | (t2, TArray(t1)) when t1 = t2 ->
+                true
+
+            | (TArray(t1), t2) when t1 = t2 ->
+                true
+
+            | (TArray(t1), TArray(t2)) when t1 = t2 ->
+                true
+
+            | (_, _) ->
+                false
+
+    go [] t1 t2
+    
 /// Compute the least upper bound (LUB) of two types, if it exists.
 let rec lub (env: TypingEnv) (t1: Type) (t2: Type) : Option<Type> =
-    let t1 = expandType env t1
-    let t2 = expandType env t2
-
-    if isSubtypeOf env t1 t2 then Some(t2)
-    elif isSubtypeOf env t2 t1 then Some(t1)
+    if t1 = t2 then
+        Some(t1)
     else
-        match (t1, t2) with
-        | (TUnion(cases1), TUnion(cases2)) ->
-            let map1 = Map.ofList cases1
-            let map2 = Map.ofList cases2
+        let t1 = expandType env t1
+        let t2 = expandType env t2
 
-            /// Preserve label order: first labels from cases1, then new labels from cases2
-            let labels1 = List.map fst cases1
-            let labels2 = List.map fst cases2
-            let labels =
-                labels1 @ (List.filter (fun l -> not (List.contains l labels1)) labels2)
+        if t1 = t2 then
+            Some(t1)
+        elif isSubtypeOf env t1 t2 then Some(t2)
+        elif isSubtypeOf env t2 t1 then Some(t1)
+        else
+            match (t1, t2) with
+            | (TUnion(cases1), TUnion(cases2)) ->
+                let map1 = Map.ofList cases1
+                let map2 = Map.ofList cases2
 
-            let folder (acc: Option<List<string * Type>>) (label: string) =
-                match acc with
-                | None -> None
-                | Some(cs) ->
-                    match (Map.tryFind label map1, Map.tryFind label map2) with
-                    | (Some(t1), Some(t2)) ->
-                        match lub env t1 t2 with
-                        | Some(t) -> Some(cs @ [(label, t)])
-                        | None -> None
-                    | (Some(t), None)
-                    | (None, Some(t)) ->
-                        Some(cs @ [(label, t)])
-                    | (None, None) ->
-                        Some(cs)
+                /// Preserve label order: first labels from cases1, then new labels from cases2
+                let labels1 = List.map fst cases1
+                let labels2 = List.map fst cases2
+                let labels =
+                    labels1 @ (List.filter (fun l -> not (List.contains l labels1)) labels2)
 
-            match List.fold folder (Some([])) labels with
-            | Some(cases) -> Some(TUnion(cases))
-            | None -> None
-
-        | (TStruct(fields1), TStruct(fields2)) ->
-            /// With the current subtype relation for structs, the natural LUB
-            /// is their common compatible prefix.
-            let rec commonPrefixLub fs1 fs2 acc =
-                match (fs1, fs2) with
-                | ((name1, ty1)::rest1, (name2, ty2)::rest2) when name1 = name2 ->
-                    match lub env ty1 ty2 with
-                    | Some(ty) -> commonPrefixLub rest1 rest2 (acc @ [(name1, ty)])
+                let folder (acc: Option<List<string * Type>>) (label: string) =
+                    match acc with
                     | None -> None
-                | _ ->
-                    Some(acc)
+                    | Some(cs) ->
+                        match (Map.tryFind label map1, Map.tryFind label map2) with
+                        | (Some(t1), Some(t2)) ->
+                            match lub env t1 t2 with
+                            | Some(t) -> Some(cs @ [(label, t)])
+                            | None -> None
+                        | (Some(t), None)
+                        | (None, Some(t)) ->
+                            Some(cs @ [(label, t)])
+                        | (None, None) ->
+                            Some(cs)
 
-            match commonPrefixLub fields1 fields2 [] with
-            | Some([]) -> None
-            | Some(fields) -> Some(TStruct(fields))
-            | None -> None
+                match List.fold folder (Some([])) labels with
+                | Some(cases) -> Some(TUnion(cases))
+                | None -> None
 
-        | (TArray(t1), TArray(t2)) ->
-            match lub env t1 t2 with
-            | Some(t) -> Some(TArray(t))
-            | None -> None
+            | (TStruct(fields1), TStruct(fields2)) ->
+                /// With the current subtype relation for structs, the natural LUB
+                /// is their common compatible prefix.
+                let rec commonPrefixLub fs1 fs2 acc =
+                    match (fs1, fs2) with
+                    | ((name1, ty1)::rest1, (name2, ty2)::rest2) when name1 = name2 ->
+                        match lub env ty1 ty2 with
+                        | Some(ty) -> commonPrefixLub rest1 rest2 (acc @ [(name1, ty)])
+                        | None -> None
+                    | _ ->
+                        Some(acc)
 
-        | _ ->
-            None
+                match commonPrefixLub fields1 fields2 [] with
+                | Some([]) -> None
+                | Some(fields) -> Some(TStruct(fields))
+                | None -> None
+
+            | (TArray(t1), TArray(t2)) ->
+                match lub env t1 t2 with
+                | Some(t) -> Some(TArray(t))
+                | None -> None
+
+            | _ ->
+                None
 
 /// Compute the LUB of a non-empty list of types.
 let lubMany (env: TypingEnv) (types: List<Type>) : Option<Type> =
