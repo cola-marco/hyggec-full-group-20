@@ -1308,6 +1308,58 @@ let rec internal doCodegen (env: CodegenEnv) (node: TypedAST): Asm =
 
         arrayCode ++ lengthCode
 
+    | Slice(arr, lo, hi) ->
+            let targetReg = env.Target
+            let loReg = env.Target + 1u
+            let hiReg = env.Target + 2u
+            let baseArraySizeReg = env.Target + 3u 
+            let baseArrayAdrrReg = env.Target + 4u 
+            let sliceMarkerReg = env.Target + 5u
+            let successLabel = Util.genSymbol("success")
+            let failLabel = Util.genSymbol("fail")
+            //compile array into target
+            (doCodegen env arr)
+            // 
+                .AddText([
+                    (RV.MV(Reg.r(baseArrayAdrrReg), Reg.r(targetReg)), "copy the base addr of target array")
+                ])
+            ++ (doCodegen env lo)
+                .AddText([
+                    (RV.ADDI(Reg.r(baseArraySizeReg), Reg.r(baseArraySizeReg), Imm12(-1)), "max index is size - 1")
+                    (RV.LW(Reg.r(baseArraySizeReg), Imm12(0), Reg.r(baseArrayAdrrReg)), "get size of array")
+                    (RV.BGT(Reg.r(targetReg), Reg.r(baseArraySizeReg), failLabel), "Fail if out of bounds")
+                    (RV.BLTZ(Reg.r(targetReg), failLabel), "Fail if out of bounds")
+                    (RV.MV(Reg.r(loReg), Reg.r(targetReg)), "Keep the lo value")
+                ])
+            ++ (doCodegen env hi)
+                .AddText([
+                    (RV.BGT(Reg.r(targetReg), Reg.r(baseArraySizeReg), failLabel), "Fail if out of bounds")
+                    (RV.BLT(Reg.r(targetReg), Reg.r(loReg), failLabel), "Fail if hi is lt lo")
+                    (RV.MV(Reg.r(hiReg), Reg.r(targetReg)), "Keep the hi value")
+                ])
+            ++ (beforeSysCall [Reg.a0] [])
+                    .AddText([
+                (RV.LI(Reg.a0, 16), "Bytes for slice")
+                (RV.LI(Reg.a7, 9), "RARS syscall: Sbrk")
+                (RV.ECALL, "")
+                //store slice address in a0
+                (RV.LI(Reg.r(sliceMarkerReg),-1),"Mark slice object with -1 at offset 0")
+                (RV.SW(Reg.r(sliceMarkerReg),Imm12(0), Reg.a0),"Store slice marker at offset 0")
+                (RV.SW(Reg.r(baseArrayAdrrReg),Imm12(4), Reg.a0),"Store base array address in slice object")
+                (RV.SW(Reg.r(loReg),Imm12(8), Reg.a0),"Store slice lower bound at offset 8")
+                (RV.SW(Reg.r(hiReg),Imm12(12), Reg.a0),"Store slice upper bound at offset 12")
+                (RV.MV(Reg.r(targetReg), Reg.a0), "keep slice the mem address")
+                ])
+            ++ (afterSysCall [Reg.a0] [])
+                .AddText([
+                    (RV.J(successLabel), "Jump to success")
+                    (RV.LABEL(failLabel), "")
+                    (RV.LI(Reg.a7, 93), "RARS syscall: Exit2")
+                    (RV.LI(Reg.a0, 1), "Corrupt array address or slice boundaries out of bounds")
+                    (RV.ECALL, "")
+                    (RV.LABEL(successLabel), "")
+                ])
+
     | Copy(target) -> 
         let targetCode = doCodegen env target
         match (expandType node.Env target.Type) with
@@ -1662,58 +1714,6 @@ and internal codegenAssertionValues (env: CodegenEnv) (assertExpr: TypedAST) (na
                 acc ++ (printStringLiteral "  ")
                     ++ (codegenAssertionValue env assertExpr.Env name))
                 (Asm()) names)
-    | Slice(arr, lo, hi) ->
-            let targetReg = env.Target
-            let loReg = env.Target + 1u
-            let hiReg = env.Target + 2u
-            let baseArraySizeReg = env.Target + 3u 
-            let baseArrayAdrrReg = env.Target + 4u 
-            let sliceMarkerReg = env.Target + 5u
-            let successLabel = Util.genSymbol("success")
-            let failLabel = Util.genSymbol("fail")
-            //compile array into target
-            (doCodegen env arr)
-            // 
-                .AddText([
-                    (RV.MV(Reg.r(baseArrayAdrrReg), Reg.r(targetReg)), "copy the base addr of target array")
-                ])
-            ++ (doCodegen env lo)
-                .AddText([
-                    (RV.ADDI(Reg.r(baseArraySizeReg), Reg.r(baseArraySizeReg), Imm12(-1)), "max index is size - 1")
-                    (RV.LW(Reg.r(baseArraySizeReg), Imm12(0), Reg.r(baseArrayAdrrReg)), "get size of array")
-                    (RV.BGT(Reg.r(targetReg), Reg.r(baseArraySizeReg), failLabel), "Fail if out of bounds")
-                    (RV.BLTZ(Reg.r(targetReg), failLabel), "Fail if out of bounds")
-                    (RV.MV(Reg.r(loReg), Reg.r(targetReg)), "Keep the lo value")
-                ])
-            ++ (doCodegen env hi)
-                .AddText([
-                    (RV.BGT(Reg.r(targetReg), Reg.r(baseArraySizeReg), failLabel), "Fail if out of bounds")
-                    (RV.BLT(Reg.r(targetReg), Reg.r(loReg), failLabel), "Fail if hi is lt lo")
-                    (RV.MV(Reg.r(hiReg), Reg.r(targetReg)), "Keep the hi value")
-                ])
-            ++ (beforeSysCall [Reg.a0] [])
-                    .AddText([
-                (RV.LI(Reg.a0, 16), "Bytes for slice")
-                (RV.LI(Reg.a7, 9), "RARS syscall: Sbrk")
-                (RV.ECALL, "")
-                //store slice address in a0
-                (RV.LI(Reg.r(sliceMarkerReg),-1),"Mark slice object with -1 at offset 0")
-                (RV.SW(Reg.r(sliceMarkerReg),Imm12(0), Reg.a0),"Store slice marker at offset 0")
-                (RV.SW(Reg.r(baseArrayAdrrReg),Imm12(4), Reg.a0),"Store base array address in slice object")
-                (RV.SW(Reg.r(loReg),Imm12(8), Reg.a0),"Store slice lower bound at offset 8")
-                (RV.SW(Reg.r(hiReg),Imm12(12), Reg.a0),"Store slice upper bound at offset 12")
-                (RV.MV(Reg.r(targetReg), Reg.a0), "keep slice the mem address")
-                ])
-            ++ (afterSysCall [Reg.a0] [])
-                .AddText([
-                    (RV.J(successLabel), "Jump to success")
-                    (RV.LABEL(failLabel), "")
-                    (RV.LI(Reg.a7, 93), "RARS syscall: Exit2")
-                    (RV.LI(Reg.a0, 1), "Corrupt array address or slice boundaries out of bounds")
-                    (RV.ECALL, "")
-                    (RV.LABEL(successLabel), "")
-                ])
-
 
 /// Generate code to save the given registers on the stack, before a RARS system
 /// call. Register a7 (which holds the system call number) is backed-up by

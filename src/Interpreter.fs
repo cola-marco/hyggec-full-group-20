@@ -16,7 +16,6 @@ let rec isValue (node: Node<'E,'T>): bool =
     | BoolVal(_)
     | IntVal(_)
     | FloatVal(_)
-    //| Slice(_)
     | StringVal(_) -> true
     | Lambda(_, _) -> true
     | Pointer(_) -> true
