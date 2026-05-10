@@ -239,6 +239,9 @@ let rec freeVars (node: Node<'E,'T>): Set<string> =
     | ArrayElem(arr, index) -> 
         Set.union (freeVars arr) (freeVars index)
     | IncDec(op, name) -> Set[name]    
+    | Sqrt(arg) -> freeVars arg
+    | Copy(arg) -> freeVars arg
+    | DeepCopy(arg) -> freeVars arg    
 
 /// Compute the union of the free variables in a list of AST nodes.
 and internal freeVarsInList (nodes: List<Node<'E,'T>>): Set<string> =
@@ -314,6 +317,13 @@ let rec capturedVars (node: Node<'E,'T>): Set<string> =
         let cvConts = List.fold folder Set[] cases
         Set.union (capturedVars expr) cvConts    
     | IncDec(op, name) -> Set[]    
+    | Sqrt(arg) -> capturedVars arg
+    | Copy(arg) -> capturedVars arg
+    | DeepCopy(arg) -> capturedVars arg
+    | ArrayCons(size, init) -> Set.union (capturedVars size) (capturedVars init)
+    | ArrayElem(name, index) -> Set.union (capturedVars name) (capturedVars index)
+    | ArrayLength(name) -> capturedVars name  
+
     
 /// Compute the union of the captured variables in a list of AST nodes.
 and internal capturedVarsInList (nodes: List<Node<'E,'T>>): Set<string> =

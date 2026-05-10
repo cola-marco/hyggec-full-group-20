@@ -1,0 +1,18 @@
+let base: int = 10;
+
+let withLocalLet = fun (x: int) -> {
+    let y: int = x + base;
+    let z: int = y + 1;
+    z
+};
+
+assert(withLocalLet(5) = 16);
+
+let conditionalClosure = fun (flag: bool, x: int) ->
+    if flag then
+        base + x
+    else
+        base + x + 100;
+
+assert(conditionalClosure(true, 1) = 11);
+assert(conditionalClosure(false, 1) = 111)

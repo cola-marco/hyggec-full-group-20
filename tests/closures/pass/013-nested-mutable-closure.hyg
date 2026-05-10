@@ -1,0 +1,15 @@
+let makeNested = fun () -> {
+    let mutable x = 0;
+
+    fun (amount: int) ->
+        fun () -> {
+            x <- x + amount;
+            x
+        }
+};
+
+let makeAddFive = makeNested();
+let addFive = makeAddFive(5);
+
+assert(addFive() = 5);
+assert(addFive() = 10)

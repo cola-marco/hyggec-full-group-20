@@ -1,0 +1,2 @@
+let inc = fun (x: int) -> x + 1;
+assert(inc(4) = 5)

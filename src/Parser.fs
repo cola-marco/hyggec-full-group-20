@@ -8,6 +8,7 @@ module Parser
 
 open Lexer
 open ParserUtils
+open AST
 
 
 /// Parse pretype. This is a forward reference to pPretype'.
@@ -817,6 +818,70 @@ let pProgram: TokenStream -> Result<AST.UntypedAST, Lexer.Position * string> =
     pExpr ->> pToken EOF  |>  summarizeErrors
 
 
+let isCV (name, scope) = Set.contains name (ASTUtil.capturedVars(scope))
+
+
+let rec fixLetMut (node: Node<'a,'b>): Node<'a,'b> =
+    match node.Expr with
+    | LetMut(name, init, scope) when isCV(name, scope) ->
+        let init' = fixLetMut init
+        let structNode = {node with Expr = StructCons([("value", init')])}
+        let scopeSubst = ASTUtil.subst scope name {node with Expr = FieldSelect({node with Expr = Var(name)}, "value")}
+        {node with Expr = Let(name, structNode, fixLetMut scopeSubst)}
+    | LetMut(name, init, scope) ->
+        {node with Expr = LetMut(name, fixLetMut init, fixLetMut scope)}
+    | Let(name, init, scope) ->
+        {node with Expr = Let(name, fixLetMut init, fixLetMut scope)}
+    | LetT(name, tpe, init, scope) ->
+        {node with Expr = LetT(name, tpe, fixLetMut init, fixLetMut scope)}
+    | Lambda(args, body) ->
+        {node with Expr = Lambda(args, fixLetMut body)}
+    | Seq(nodes) ->
+        {node with Expr = Seq(List.map fixLetMut nodes)}
+    | BinNumOp(op, lhs, rhs) ->
+        {node with Expr = BinNumOp(op, fixLetMut lhs, fixLetMut rhs)}
+    | BinLogicOp(op, lhs, rhs) ->
+        {node with Expr = BinLogicOp(op, fixLetMut lhs, fixLetMut rhs)}
+    | BinRelOp(op, lhs, rhs) ->
+        {node with Expr = BinRelOp(op, fixLetMut lhs, fixLetMut rhs)}
+    | Sqrt(arg) -> {node with Expr = Sqrt(fixLetMut arg)}
+    | Not(arg) -> {node with Expr = Not(fixLetMut arg)}
+    | Print(arg) -> {node with Expr = Print(fixLetMut arg)}
+    | PrintLn(arg) -> {node with Expr = PrintLn(fixLetMut arg)}
+    | Assertion(arg) -> {node with Expr = Assertion(fixLetMut arg)}
+    | Ascription(tpe, arg) -> {node with Expr = Ascription(tpe, fixLetMut arg)}
+    | UnionCons(label, arg) -> {node with Expr = UnionCons(label, fixLetMut arg)}
+    | ArrayLength(arg) -> {node with Expr = ArrayLength(fixLetMut arg)}
+    | Copy(arg) -> {node with Expr = Copy(fixLetMut arg)}
+    | DeepCopy(arg) -> {node with Expr = DeepCopy(fixLetMut arg)}
+    | If(cond, ifTrue, ifFalse) ->
+        {node with Expr = If(fixLetMut cond, fixLetMut ifTrue, fixLetMut ifFalse)}
+    | Type(name, tpe, scope) ->
+        {node with Expr = Type(name, tpe, fixLetMut scope)}
+    | While(cond, body) ->
+        {node with Expr = While(fixLetMut cond, fixLetMut body)}
+    | DoWhile(body, cond) ->
+        {node with Expr = DoWhile(fixLetMut body, fixLetMut cond)}
+    | For(name, init, cond, step, body) ->
+        {node with Expr = For(name, fixLetMut init, fixLetMut cond, fixLetMut step, fixLetMut body)}
+    | Application(expr, args) ->
+        {node with Expr = Application(fixLetMut expr, List.map fixLetMut args)}
+    | StructCons(fields) ->
+        {node with Expr = StructCons(List.map (fun (n, e) -> (n, fixLetMut e)) fields)}
+    | FieldSelect(target, field) ->
+        {node with Expr = FieldSelect(fixLetMut target, field)}
+    | Assign(target, expr) ->
+        {node with Expr = Assign(fixLetMut target, fixLetMut expr)}
+    | Match(expr, cases) ->
+        {node with Expr = Match(fixLetMut expr, List.map (fun (l, v, cont) -> (l, v, fixLetMut cont)) cases)}
+    | ArrayCons(size, init) ->
+        {node with Expr = ArrayCons(fixLetMut size, fixLetMut init)}
+    | ArrayElem(name, index) ->
+        {node with Expr = ArrayElem(fixLetMut name, fixLetMut index)}
+    | UnitVal | BoolVal(_) | IntVal(_) | FloatVal(_) | StringVal(_)
+    | Pointer(_) | Var(_) | ReadInt | ReadFloat -> node    
+    | IncDec(op, name) -> node
+
 /// Parse the given array of 'tokens' with positions and return either Ok
 /// UntypedAST, or an Error with a position and a message.
 let parse (tokens: array<TokenWithPos>): Result<AST.UntypedAST, Lexer.Position * string> =
@@ -827,4 +892,8 @@ let parse (tokens: array<TokenWithPos>): Result<AST.UntypedAST, Lexer.Position *
         Index = 0
         Expected = ResizeArray 512
     }
-    pProgram stream
+    
+    match pProgram stream with
+    | Ok(ast) -> Ok(fixLetMut ast)
+    | Error(e) -> Error(e)
+
