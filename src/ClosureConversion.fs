@@ -129,8 +129,203 @@ let wrapTypeDefs (pos: AST.Position) (defs: List<GeneratedTypeDef>) (body: AST.U
         defs
         body
 
-// Replace captured variables in an already converted untyped AST.
-// For example, x becomes $clos_1.x inside the generated plain function body.
+/// Remove duplicate generated type definitions while preserving the first one.
+let private deduplicateTypeDefs (defs: List<GeneratedTypeDef>) : List<GeneratedTypeDef> =
+    defs
+    |> List.fold
+        (
+            fun acc def ->
+                if acc |> List.exists (fun existing -> existing.Name = def.Name) then
+                    acc
+                else
+                    acc @ [def]
+        )
+        []
+
+/// Closure conversion turns let-bound functions into closure structures.
+/// This map remembers the generated closure type of each converted variable
+/// while converting the scope where that variable is visible.
+let mutable private convertedVarTypes: Map<string, Type.Type> = Map.empty
+
+/// Temporarily records the converted type of a let-bound variable while
+/// converting its scope, then restores the previous map afterwards.
+let private withConvertedVarType (name: string) (convertedType: Type.Type) (work: unit -> ConversionResult) : ConversionResult =
+    let previous =
+        convertedVarTypes
+
+    convertedVarTypes <-
+        convertedVarTypes.Add(name, convertedType)
+
+    try
+        work()
+    finally
+        convertedVarTypes <- previous
+
+let private isGeneratedClosureType (tpe: Type.Type) =
+    match tpe with
+    | TVar name when name.StartsWith("$Closure") -> true
+    | _ -> false
+
+/// Create a common wrapper closure for an if-expression whose branches already
+/// produce different generated closure types, but whose original source type is
+/// the same function type.
+///
+/// This version avoids generating union constructors and pattern matching.
+/// Instead, the wrapper closure stores both possible closures and an integer
+/// tag telling the wrapper which one was selected.
+let private makeSharedClosureIf (node: Typechecker.TypedAST) (condResult: ConversionResult) (trueResult: ConversionResult) (falseResult: ConversionResult) (argTypes: List<Type.Type>) (returnType: Type.Type) : ConversionResult =
+    let commonClosureTypeName =
+        nameGenerator.Generate "ClosureIf"
+
+    let closureArgName =
+        nameGenerator.Generate "clos"
+
+    let argNamesAndTypes =
+        argTypes
+        |> List.mapi
+            (
+                fun i argType ->
+                    nameGenerator.Generate $"arg%d{i + 1}",
+                    typeToPretype node.Pos argType
+            )
+
+    let commonClosurePretype =
+        mkPretype node.Pos (TId commonClosureTypeName)
+
+    let argPretypes =
+        argTypes |> List.map (typeToPretype node.Pos)
+
+    let wrapperFunctionType =
+        mkPretype node.Pos
+            (
+                Pretype.TFun(
+                    commonClosurePretype :: argPretypes,
+                    typeToPretype node.Pos returnType
+                )
+            )
+
+    let commonClosureType =
+        {
+            Name = commonClosureTypeName
+            Def =
+                mkPretype node.Pos
+                    (
+                        Pretype.TStruct(
+                            [
+                                "$f", wrapperFunctionType
+                                "tag", mkPretype node.Pos (TId "int")
+                                "left", typeToPretype node.Pos trueResult.ConvertedType
+                                "right", typeToPretype node.Pos falseResult.ConvertedType
+                            ]
+                        )
+                    )
+        }
+
+    let closureVar =
+        mkNode node.Pos (Var closureArgName)
+
+    let tagField =
+        mkNode node.Pos (FieldSelect(closureVar, "tag"))
+
+    let leftField =
+        mkNode node.Pos (FieldSelect(closureVar, "left"))
+
+    let rightField =
+        mkNode node.Pos (FieldSelect(closureVar, "right"))
+
+    let argVars =
+        argNamesAndTypes
+        |> List.map (fun (name, _) -> mkNode node.Pos (Var name))
+
+    let makeInnerCall closureExpr =
+        let functionField =
+            mkNode node.Pos (FieldSelect(closureExpr, "$f"))
+
+        mkNode node.Pos
+            (
+                Application(
+                    functionField,
+                    closureExpr :: argVars
+                )
+            )
+
+    let tagIsZero =
+        mkNode node.Pos
+            (
+                BinRelOp(
+                    RelationalOp.Eq,
+                    tagField,
+                    mkNode node.Pos (IntVal 0)
+                )
+            )
+
+    let wrapperBody =
+        mkNode node.Pos
+            (
+                If(
+                    tagIsZero,
+                    makeInnerCall leftField,
+                    makeInnerCall rightField
+                )
+            )
+
+    let wrapperFunction =
+        mkNode node.Pos
+            (
+                Lambda(
+                    (closureArgName, commonClosurePretype) :: argNamesAndTypes,
+                    wrapperBody
+                )
+            )
+
+    let makeBranch tagValue =
+        let rawClosure =
+            mkNode node.Pos
+                (
+                    StructCons(
+                        [
+                            "$f", wrapperFunction
+                            "tag", mkNode node.Pos (IntVal tagValue)
+                            "left", trueResult.Expr
+                            "right", falseResult.Expr
+                        ]
+                    )
+                )
+
+        mkNode node.Pos
+            (
+                Ascription(
+                    commonClosurePretype,
+                    rawClosure
+                )
+            )
+
+    {
+        Expr =
+            mkLike node
+                (
+                    If(
+                        condResult.Expr,
+                        makeBranch 0,
+                        makeBranch 1
+                    )
+                )
+
+        TypeDefs =
+            deduplicateTypeDefs
+                (
+                    condResult.TypeDefs
+                    @ trueResult.TypeDefs
+                    @ falseResult.TypeDefs
+                    @ [commonClosureType]
+                )
+
+        ConvertedType =
+            TVar commonClosureTypeName
+    }
+
+/// Replace captured variables in an already converted untyped AST.
+/// For example, x becomes $clos_1.x inside the generated plain function body.
 let rec replaceCapturedVars (closureArgName: string) (captured: Set<string>) (node: AST.UntypedAST) : AST.UntypedAST =
     match node.Expr with
     | Var name when Set.contains name captured ->
@@ -345,9 +540,9 @@ let rec replaceCapturedVars (closureArgName: string) (captured: Set<string>) (no
     | other ->
         mkLikeUntyped node other
 
-// Convert a lambda into a closure struct using a given closure type name
-// and a given set of captured variables. This is used when two lambdas
-// must share the same closure type, e.g. in both branches of an if.
+/// Convert a lambda into a closure struct using a given closure type name
+/// and a given set of captured variables. This is used when two lambdas
+/// must share the same closure type, e.g. in both branches of an if.
 and convertLambdaToClosureWith (closureTypeName: string)   (captured: Set<string>)  (lambdaNode: Typechecker.TypedAST)   (args: List<string * AST.PretypeNode>)   (body: Typechecker.TypedAST) : ConversionResult =
     let closureArgName =
         nameGenerator.Generate "clos"
@@ -456,8 +651,8 @@ and convertLambdaToClosureWith (closureTypeName: string)   (captured: Set<string
         ConvertedType = TVar closureTypeName
     }
 
-// Convert a lambda expression into a closure struct.
-// This is used both for let-bound lambdas and nested lambdas.
+/// Convert a lambda expression into a closure struct.
+/// This is used both for let-bound lambdas and nested lambdas.
 and convertLambdaToClosure (lambdaNode: Typechecker.TypedAST) (args: List<string * AST.PretypeNode>) (body: Typechecker.TypedAST) : ConversionResult =
     let closureTypeName =
         nameGenerator.Generate "Closure"
@@ -512,7 +707,10 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
         {
             Expr = mkLike node (Var name)
             TypeDefs = []
-            ConvertedType = node.Type
+            ConvertedType =
+                match Map.tryFind name convertedVarTypes with
+                | Some convertedType -> convertedType
+                | None -> node.Type
         }
 
     | BinNumOp(op, lhs, rhs) ->
@@ -666,22 +864,37 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
         let falseResult =
             convertExpr ifFalse
 
-        {
-            Expr = mkLike node 
-                (
-                    If(
-                        condResult.Expr,
-                        trueResult.Expr,
-                        falseResult.Expr
+        match node.Type with
+        | TFun(argTypes, returnType)
+            when trueResult.ConvertedType <> falseResult.ConvertedType
+                && isGeneratedClosureType trueResult.ConvertedType
+                && isGeneratedClosureType falseResult.ConvertedType ->
+
+            makeSharedClosureIf
+                node
+                condResult
+                trueResult
+                falseResult
+                argTypes
+                returnType
+
+        | _ ->
+            {
+                Expr = mkLike node 
+                    (
+                        If(
+                            condResult.Expr,
+                            trueResult.Expr,
+                            falseResult.Expr
+                        )
                     )
-                )
 
-            TypeDefs =
-                condResult.TypeDefs @ trueResult.TypeDefs @ falseResult.TypeDefs
+                TypeDefs =
+                    condResult.TypeDefs @ trueResult.TypeDefs @ falseResult.TypeDefs
 
-            ConvertedType =
-                trueResult.ConvertedType
-        }
+                ConvertedType =
+                    trueResult.ConvertedType
+            }
 
     | Seq nodes ->
         let nodeResults = nodes |> List.map convertExpr
@@ -744,7 +957,11 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
             convertLambdaToClosure init args body
 
         let scopeResult =
-            convertExpr scope
+            withConvertedVarType name initResult.ConvertedType
+                (
+                    fun () ->
+                        convertExpr scope
+                )
 
         {
             Expr = mkLike node 
@@ -768,7 +985,11 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
             convertExpr init
 
         let scopeResult =
-            convertExpr scope
+            withConvertedVarType name initResult.ConvertedType
+                (
+                    fun () ->
+                        convertExpr scope
+                )
 
         {
             Expr = mkLike node 
@@ -792,7 +1013,11 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
             convertExpr init
 
         let scopeResult =
-            convertExpr scope
+                withConvertedVarType name initResult.ConvertedType
+                    (
+                        fun () ->
+                            convertExpr scope
+                    )
 
         {
             Expr = mkLike node 
@@ -817,7 +1042,11 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
             convertExpr init
 
         let scopeResult =
-            convertExpr scope
+                withConvertedVarType name initResult.ConvertedType
+                    (
+                        fun () ->
+                            convertExpr scope
+                    )
 
         {
             Expr = mkLike node 
@@ -1099,7 +1328,20 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
             TypeDefs = nameResult.TypeDefs
             ConvertedType = node.Type
         }    
-    | IncDec(op, name) -> failwith "Not Implemented"
+    | IncDec(op, name) ->
+        {
+            Expr =
+                mkLike node
+                    (
+                        IncDec(op, name)
+                    )
+
+            TypeDefs =
+                []
+
+            ConvertedType =
+                node.Type
+        }
 
 /// Entry helper for closure conversion.
 /// Converts a typed AST into an untyped closure-converted AST and wraps the
@@ -1110,5 +1352,5 @@ and convert (node: Typechecker.TypedAST) : AST.UntypedAST =
 
 /// Entry point for the closure-conversion phase.
 let closureConvert (node: Typechecker.TypedAST) : AST.UntypedAST =
+    convertedVarTypes <- Map.empty
     convert node
-
