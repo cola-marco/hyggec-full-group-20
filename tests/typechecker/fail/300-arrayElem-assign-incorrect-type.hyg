@@ -1,0 +1,6 @@
+let n = 1;
+let arr: array {int} = array(n, 0);
+
+arrayElem(arr, 0) <- "hello";
+
+assert(arrayElem(arr,0) = "hello")

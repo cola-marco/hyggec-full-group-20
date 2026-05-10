@@ -1,0 +1,9 @@
+let inner = struct {f = 1};
+let x = struct {a = inner; b = inner};
+let y = deepcopy(x);
+
+y.a.f <- 2;
+assert(y.a.f = 2);
+assert(y.b.f = 1);
+assert(x.a.f = 1);
+assert(x.b.f = 1)

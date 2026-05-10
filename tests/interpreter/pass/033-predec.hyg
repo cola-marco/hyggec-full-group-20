@@ -1,0 +1,8 @@
+let mutable x = 17;
+assert(--x = 16);
+
+let mutable y = 4.1f;
+assert(--y = 3.1f);
+
+assert(x = 16);
+assert(y = 3.1f)

@@ -77,6 +77,10 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
         // Propagate the substitution in the "let" scope
         {node with Expr = LetT(vname, tpe, (subst init var sub),
                                (subst scope var sub))}
+    | LetRec(vname, tpe, init, scope) when vname = var ->
+        {node with Expr = LetRec(vname, tpe, subst init var sub, scope)}
+    | LetRec(vname, tpe, init, scope) ->
+        {node with Expr = LetRec(vname, tpe, subst init var sub, subst scope var sub)}
 
     | LetMut(vname, init, scope) when vname = var ->
         // Do not substitute the variable in the "let mutable" scope
@@ -122,6 +126,12 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
         let substInitNodes = List.map (fun e -> (subst e var sub)) initNodes
         {node with Expr = StructCons(List.zip fieldNames substInitNodes)}
 
+    | Copy(source) ->
+        { node with Expr = Copy(subst source var sub) }
+        
+    | DeepCopy(source) ->
+        { node with Expr = DeepCopy(subst source var sub) }
+
     | FieldSelect(target, field) ->
         {node with Expr = FieldSelect((subst target var sub), field)}
 
@@ -134,6 +144,27 @@ let rec subst (node: Node<'E,'T>) (var: string) (sub: Node<'E,'T>): Node<'E,'T> 
             else (lab, v, (subst cont var sub))
         let cases2 = List.map substCase cases
         {node with Expr = Match((subst expr var sub), cases2)}
+
+    | ArrayCons(size, init) ->
+        let substSize = subst size var sub
+        let substInit = subst init var sub
+        {node with Expr = ArrayCons(substSize, substInit)}
+    
+    | ArrayLength(arr) ->
+        let substArr= subst arr var sub
+        {node with Expr = ArrayLength(substArr)}
+
+    | ArrayElem(arr, index) ->
+        let substArr= subst arr var sub
+        let substIndex= subst index var sub
+        {node with Expr = ArrayElem(substArr, substIndex)}    
+    | IncDec(op, name) -> failwith "Not Implemented"
+    
+    | Slice(arr, lo, hi) ->
+        let substArr = subst arr var sub 
+        let substLo = subst lo var sub 
+        let substHi = subst hi var sub
+        {node with Expr = Slice(substArr, substLo, substHi)}
 
 /// Compute the set of free variables in the given AST node.
 let rec freeVars (node: Node<'E,'T>): Set<string> =
@@ -200,7 +231,17 @@ let rec freeVars (node: Node<'E,'T>): Set<string> =
             Set.union acc ((freeVars cont).Remove var)
         /// Free variables in all match continuations
         let fvConts = List.fold folder Set[] cases
-        Set.union (freeVars expr) fvConts
+        Set.union (freeVars expr) fvConts    
+    | ArrayCons(size, init) -> 
+        Set.union (freeVars size) (freeVars init)
+    | ArrayLength(arr) -> 
+        freeVars arr
+    | ArrayElem(arr, index) -> 
+        Set.union (freeVars arr) (freeVars index)
+    | IncDec(op, name) -> Set[name]    
+    | Sqrt(arg) -> freeVars arg
+    | Copy(arg) -> freeVars arg
+    | DeepCopy(arg) -> freeVars arg    
 
 /// Compute the union of the free variables in a list of AST nodes.
 and internal freeVarsInList (nodes: List<Node<'E,'T>>): Set<string> =
@@ -239,6 +280,7 @@ let rec capturedVars (node: Node<'E,'T>): Set<string> =
     | Ascription(_, node) -> capturedVars node
     | Let(name, init, scope)
     | LetT(name, _, init, scope)
+    | LetRec(name, _, init, scope)
     | LetMut(name, init, scope) ->
         // All the captured variables in the 'let' initialisation, together with
         // all captured variables in the scope --- minus the newly-bound var
@@ -274,8 +316,17 @@ let rec capturedVars (node: Node<'E,'T>): Set<string> =
             Set.union acc ((capturedVars cont).Remove var)
         /// Captured variables in all match continuations
         let cvConts = List.fold folder Set[] cases
-        Set.union (capturedVars expr) cvConts
+        Set.union (capturedVars expr) cvConts    
+    | IncDec(op, name) -> Set[]    
+    | Sqrt(arg) -> capturedVars arg
+    | Copy(arg) -> capturedVars arg
+    | DeepCopy(arg) -> capturedVars arg
+    | ArrayCons(size, init) -> Set.union (capturedVars size) (capturedVars init)
+    | ArrayElem(name, index) -> Set.union (capturedVars name) (capturedVars index)
+    | ArrayLength(name) -> capturedVars name
+    | Slice(arr, lo, hi) -> Set.union (capturedVars arr) (capturedVars lo) |> Set.union (capturedVars hi)
 
+    
 /// Compute the union of the captured variables in a list of AST nodes.
 and internal capturedVarsInList (nodes: List<Node<'E,'T>>): Set<string> =
     /// Compute the free variables of 'node' and add them to the accumulator

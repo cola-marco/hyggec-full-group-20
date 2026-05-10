@@ -70,6 +70,11 @@ let rec internal formatType (t: Type.Type): Tree =
         let casesChildren =
             List.map (fun (case: Type.UnionCaseInfo)-> ($"label %s{case.Label}", formatType t)) cases
         Node("union", casesChildren)
+    | Type.TArray(init) ->
+        Node("array", [
+            ("size", formatType Type.TInt)
+            ("init", formatType init)
+        ])
 
 
 
@@ -149,6 +154,10 @@ let rec internal formatASTRec (node: AST.Node<'E,'T>): Tree =
     | LetMut(name, init, scope) ->
         mkTree $"Let mutable %s{name}" node [("init", formatASTRec init)
                                              ("scope", formatASTRec scope)]
+    | LetRec(name, tpe, init, scope) ->
+        mkTree $"LetRec %s{name}" node [("Ascription", formatPretypeNode tpe)
+                                        ("init", formatASTRec init)
+                                        ("scope", formatASTRec scope)]
     | Assign(target, expr) ->
         mkTree $"Assign" node [("target", formatASTRec target)
                                ("expr", formatASTRec expr)]
@@ -163,6 +172,8 @@ let rec internal formatASTRec (node: AST.Node<'E,'T>): Tree =
                             ("cond", formatASTRec cond)
                             ("step", formatASTRec step)
                             ("body", formatASTRec body)]
+    | IncDec(op, name) ->
+        mkTree $"IncDec {op} %s{name}" node []
     | Lambda(args, body) ->
         /// Formatted arguments with their pretype
         let argChildren =
@@ -185,8 +196,30 @@ let rec internal formatASTRec (node: AST.Node<'E,'T>): Tree =
         mkTree $"FieldSelect %s{field}" node [("expr", formatASTRec target)]
     | Pointer(addr) ->
         mkTree $"Pointer 0x%x{addr}" node []
+    | Copy(arg) ->
+        mkTree "Copy" node [("arg", formatASTRec arg)]
+    | DeepCopy(arg) ->
+        mkTree "DeepCopy" node [("arg", formatASTRec arg)]
     | UnionCons(label, expr) ->
         mkTree $"UnionCons %s{label}" node [("expr", formatASTRec expr)]
+    | ArrayCons(size, init) ->
+        mkTree "ArrayCons" node [
+            ("size", formatASTRec size)
+            ("init", formatASTRec init)
+        ]
+    | ArrayElem(name, index) ->
+        mkTree "ArrayElem" node [
+            ("name", formatASTRec name)
+            ("index", formatASTRec index)
+        ]
+    | ArrayLength(arr) ->
+        mkTree "ArrayLength" node ["name", formatASTRec arr]
+    | Slice(baseArray, lo, hi) ->
+        mkTree "Slice" node [
+            ("of array", formatASTRec baseArray)
+            ("from index", formatASTRec lo)
+            ("to index", formatASTRec hi)
+        ]
     | Match(expr, cases) ->
         let casesChildren =
             List.map (fun (l, v, cont) -> ($"case %s{l}{{%s{v}}}",
@@ -244,6 +277,8 @@ and internal formatPretypeNode (node: PretypeNode): Tree =
             List.map (fun (name, t) -> ((formatPretypeDescr t $"label %s{name}"),
                                         formatPretypeNode t)) cases
         Node((formatPretypeDescr node "Union pretype"), casesChildren)
+    | Pretype.TArray(tpe) ->
+        Node((formatPretypeDescr node "Array pretype"), [("Element type", formatPretypeNode tpe)])
 
 /// Format the description of a pretype AST node (without printing its
 /// children).

@@ -1,0 +1,11 @@
+type OptionalInt = union {
+  Some: int;
+  None: unit
+};
+
+let x: OptionalInt = Some{41};
+
+match x with {
+  Some{y} -> Some{y + 1};
+  None{_} -> None{()}
+}

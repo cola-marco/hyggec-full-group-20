@@ -8,6 +8,7 @@ module Parser
 
 open Lexer
 open ParserUtils
+open AST
 
 
 /// Parse pretype. This is a forward reference to pPretype'.
@@ -113,7 +114,7 @@ let pPretypesCommaSeq =
 let pParenPretypesCommaSeq = choice [
     pToken LIT_UNIT >>- preturn []
     pToken LPAREN >>- pPretypesCommaSeq ->> pToken RPAREN
-]
+] 
 
 
 /// Parse a non-empty sequence of identifiers with type ascriptions, separated
@@ -135,6 +136,10 @@ let pIdentPretypesSemiSeq =
 
 /// Parse a pretype, producing a PretypeNode.
 let pPretype' = choice [
+    // Array type
+    pToken ARRAY ->>- (pToken LCURLY >>- pPretype) ->>- pToken RCURLY
+        |>> fun ((tok1, tpe), tok2) ->
+            mkPretypeNode (AST.Pretype.TArray tpe) tok1.Begin tok1.Begin tok2.End
     pIdent
         |>> fun (tok, name) ->
             mkPretypeNode (AST.Pretype.TId name) tok.Begin tok.Begin tok.End
@@ -150,6 +155,7 @@ let pPretype' = choice [
     pToken UNION ->>- (pToken LCURLY >>- pIdentPretypesSemiSeq) ->>- pToken RCURLY
         |>> fun ((tok1, cases), tok2) ->
             mkPretypeNode (AST.Pretype.TUnion cases) tok1.Begin tok1.Begin tok2.End
+    
 ]
 
 
@@ -296,6 +302,27 @@ let pVariable =
             mkNode (AST.Expr.Var name) tok.Begin tok.Begin tok.End
 
 
+/// Parse a pre increment/decrement expression
+let pIncDecExpr =
+    choice [
+        pToken INC ->>- pIdent 
+        |>> fun (tok, (tokVar, name)) ->
+            mkNode (AST.Expr.IncDec (AST.IncDecOp.PreInc, name)) tok.Begin tok.Begin tokVar.End
+
+        pToken DEC ->>- pIdent 
+        |>> fun (tok, (tokVar, name)) ->
+            mkNode (AST.Expr.IncDec (AST.IncDecOp.PreDec, name)) tok.Begin tok.Begin tokVar.End
+
+        pIdent ->>- pToken INC
+        |>> fun ((tokVar, name), tok) ->
+            mkNode (AST.Expr.IncDec (AST.IncDecOp.PostInc, name)) tokVar.Begin tokVar.Begin tok.End
+
+        pIdent ->>- pToken DEC
+        |>> fun ((tokVar, name), tok) ->
+            mkNode (AST.Expr.IncDec (AST.IncDecOp.PostDec, name)) tokVar.Begin tokVar.Begin tok.End
+    ]
+
+
 /// Parse a non-empty sequence of identifiers (representing struct fields) with
 /// initialized with simple expressions, separated by semicolons.
 let pFieldInitSeq =
@@ -320,6 +347,15 @@ let pStructCons =
         |>> fun ((tok1, fields), tok2) ->
             mkNode (AST.Expr.StructCons fields) tok1.Begin tok1.Begin tok2.End
 
+let pCopy = 
+    pToken COPY ->>- (pToken LPAREN >>- pSimpleExpr) ->>- pToken RPAREN
+    |>> fun ((tok1, expr), tok2) ->
+            mkNode (AST.Expr.Copy expr) tok1.Begin tok1.Begin tok2.End
+
+let pDeepCopy = 
+    pToken DEEPCOPY ->>- (pToken LPAREN >>- pSimpleExpr) ->>- pToken RPAREN
+    |>> fun ((tok1, expr), tok2) ->
+            mkNode (AST.Expr.DeepCopy expr) tok1.Begin tok1.Begin tok2.End
 
 /// Parse a sequence of one or more dot-separated identifiers (representing
 /// field names in a sequence of fields selections, e.g. 'field1.field2.field3').
@@ -335,14 +371,46 @@ let pFieldDotSeq =
                 fun acc field ->
                     acc @ field)
 
+/// Parse a array value construction.
+let pArrayCons =
+    pToken ARRAY ->>- (pToken LPAREN >>- pSimpleExpr) ->>- (pToken COMMA >>- pSimpleExpr ->>- pToken RPAREN)
+        |>> fun ((tok1, numberOfElements), (initialValue, tok2)) ->
+            mkNode (AST.Expr.ArrayCons (numberOfElements, initialValue)) tok1.Begin tok1.Begin tok2.End
+
+
+/// Parse a array value construction.
+let pArrayElem =
+    pToken ARRAYELEM ->>- (pToken LPAREN >>- pVariable) ->>- (pToken COMMA >>- pSimpleExpr ->>- pToken RPAREN)
+        |>> fun ((tok1, name), (index, tok2)) ->
+            mkNode (AST.Expr.ArrayElem (name, index)) tok1.Begin tok1.Begin tok2.End
+
+let pArrayLength =
+    pToken ARRAYLENGTH ->>- (pToken LPAREN >>- pVariable) ->>- pToken RPAREN
+        |>> fun ((tok1, name), tok2) ->
+            mkNode (AST.Expr.ArrayLength name) tok1.Begin tok1.Begin tok2.End
+
+/// Parse a slice expression
+let pSlice =
+    pToken SLICE ->>- (pToken LPAREN >>- pSimpleExpr) ->>- (pToken COMMA >>- pSimpleExpr) ->>- (pToken COMMA >>- pSimpleExpr ->>- pToken RPAREN)
+        |>> fun (((tokSlice, arrayExpr), loExpr), (hiExpr, tok2)) ->
+            mkNode (AST.Expr.Slice (arrayExpr, loExpr, hiExpr))
+                   tokSlice.Begin tokSlice.Begin tok2.End
+
 
 /// Parse a primary expression.
 let pPrimary = choice [
                     pToken LPAREN >>- pSimpleExpr ->> pToken RPAREN
                     pValue
                     pUnionCons // IMPORTANT: try parsing this before 'pVariable'
+                    pIncDecExpr
                     pVariable
                     pStructCons
+                    pCopy
+                    pDeepCopy
+                    pArrayCons
+                    pSlice
+                    pArrayElem
+                    pArrayLength
                ] >>= fun node ->
                     // If the expression is followed by a dot, then it is a
                     // field selection. If so, parse and accumulate as many
@@ -536,6 +604,35 @@ let pMatchCases =
                     // with label, variable, and expression; accumulate it with acc
                     List.append acc matchCase)
 
+/// Xifeng's original for implementation with scoped variable
+let pForScopedExpr =
+    pToken LET >>- pToken MUTABLE >>- pIdent ->>-   // let mutable x
+        (pToken EQ >>- pSimpleExpr) ->>-                // =
+        (pToken SEMI >>- pSimpleExpr) ->>-              // ; ec
+        (pToken SEMI >>- pSimpleExpr)              // ; eu
+    |>> fun ((((tok, name), ei), ec), eu) ->
+        (((((tok, name), ei), ec), eu), None)
+
+/// for each loop syntax sugar
+let pForInExpr =
+    pIdent ->>- (pToken IN >>- pSimpleExpr)
+    |>> fun ((tok, varName), arrayExpr) ->
+        let loopVarName = "__i"
+        let initExpr = mkNode (AST.Expr.IntVal 0) tok.Begin tok.Begin tok.End
+        let condExpr = 
+            mkNode (AST.Expr.BinRelOp(AST.RelationalOp.Less,
+                                      mkNode (AST.Expr.Var loopVarName) tok.Begin tok.Begin tok.End,
+                                      mkNode (AST.Expr.ArrayLength arrayExpr) tok.Begin tok.Begin arrayExpr.Pos.End))
+                   tok.Begin tok.Begin arrayExpr.Pos.End
+        let addOneExpr = mkNode (AST.Expr.BinNumOp(AST.NumericalOp.Add,
+                                                    mkNode (AST.Expr.Var loopVarName) tok.Begin tok.Begin tok.End,
+                                                    mkNode (AST.Expr.IntVal 1) tok.Begin tok.Begin tok.End))
+                                tok.Begin tok.Begin tok.End
+        let stepExpr = 
+            mkNode (AST.Expr.Assign(mkNode (AST.Expr.Var loopVarName) tok.Begin tok.Begin tok.End,
+                                    addOneExpr))
+                   tok.Begin tok.Begin tok.End
+        (((((tok, loopVarName), initExpr), condExpr), stepExpr), Some(varName, arrayExpr))
 
 /// Parse a "simple" expression, which (unlike the more general 'pExpr') cannot
 /// result in a 'Seq'uence of sub-expressions, unless they are explicitly
@@ -557,13 +654,20 @@ let pSimpleExpr' = choice [
     
     pToken FOR ->>-
         (pToken LPAREN >>-                              // (
-        pToken LET >>- pToken MUTABLE >>- pIdent ->>-   // let mutable x
-        (pToken EQ >>- pSimpleExpr) ->>-                // =
-        (pToken SEMI >>- pSimpleExpr) ->>-              // ; ec
-        (pToken SEMI >>- pSimpleExpr) ->>-              // ; eu
+        choice [
+            pForInExpr
+            pForScopedExpr
+        ] ->>-
         (pToken RPAREN >>- pSimpleExpr))                //) eb
-            |>> fun(tokFor,(((((_,name),ei),ec),eu),eb)) ->
-                mkNode (AST.Expr.For (name, ei, ec, eu, eb))
+            |>> fun(tokFor,((((((_,name),ei),ec),eu),subst),eb)) ->
+                let finalBody = 
+                    match subst with
+                    | None -> eb
+                    | Some(varName, arrayExpr) ->
+                        let indexVar = mkNode (AST.Expr.Var "__i") tokFor.Begin tokFor.Begin tokFor.End
+                        let arrayElemExpr = mkNode (AST.Expr.ArrayElem(arrayExpr, indexVar)) tokFor.Begin tokFor.Begin tokFor.End
+                        ASTUtil.subst eb varName arrayElemExpr
+                mkNode (AST.Expr.For (name, ei, ec, eu, finalBody))
                        tokFor.Begin tokFor.Begin eb.Pos.End
 
     // Lambda expression: fun (args) -> body
@@ -652,6 +756,26 @@ let pLetMut =
                 mkNode (AST.Expr.LetMut (name, init, scope))
                        tok.Begin tok.Begin scope.Pos.End
 
+///<summary>
+/// Parse a recursive <c>rec</c> binding.
+/// </summary>                   
+let pLetRec =
+    pToken REC >>- pToken FUN ->>- pIdent ->>-
+        pParenIdentTypesCommaSeq ->>-
+        (pToken COLON >>- pPretype) ->>-
+        (pToken EQ >>- pSimpleExpr) ->>-
+        (pToken SEMI >>- pExpr)
+            |>> fun (((((tok, (_, name)), args), retType), body), scope) ->
+                let argTypes = List.map snd args
+                let funPretype = AST.Pretype.TFun (argTypes, retType)
+                let funPretypeNode = mkPretypeNode funPretype
+                                                   tok.Begin tok.Begin retType.Pos.End
+                let lambda = mkNode (AST.Expr.Lambda (args, body))
+                                    tok.Begin tok.Begin body.Pos.End
+                mkNode (AST.Expr.LetRec (name, funPretypeNode, lambda, scope))
+                       tok.Begin tok.Begin scope.Pos.End
+                       
+
 
 /// Parse any Hygge expression.
 let pExpr' = choice [
@@ -672,6 +796,7 @@ let pExpr' = choice [
                                     tok.Begin tok.Begin body.Pos.End
                 mkNode (AST.Expr.LetT (name, funPretypeNode, lambda, scope))
                        tok.Begin tok.Begin scope.Pos.End
+    pLetRec
     pLetMut
     pLetT
     pLet
@@ -693,6 +818,73 @@ let pProgram: TokenStream -> Result<AST.UntypedAST, Lexer.Position * string> =
     pExpr ->> pToken EOF  |>  summarizeErrors
 
 
+let isCV (name, scope) = Set.contains name (ASTUtil.capturedVars(scope))
+
+
+let rec fixLetMut (node: Node<'a,'b>): Node<'a,'b> =
+    match node.Expr with
+    | LetMut(name, init, scope) when isCV(name, scope) ->
+        let init' = fixLetMut init
+        let structNode = {node with Expr = StructCons([("value", init')])}
+        let scopeSubst = ASTUtil.subst scope name {node with Expr = FieldSelect({node with Expr = Var(name)}, "value")}
+        {node with Expr = Let(name, structNode, fixLetMut scopeSubst)}
+    | LetMut(name, init, scope) ->
+        {node with Expr = LetMut(name, fixLetMut init, fixLetMut scope)}
+    | Let(name, init, scope) ->
+        {node with Expr = Let(name, fixLetMut init, fixLetMut scope)}
+    | LetT(name, tpe, init, scope) ->
+        {node with Expr = LetT(name, tpe, fixLetMut init, fixLetMut scope)}
+    | Lambda(args, body) ->
+        {node with Expr = Lambda(args, fixLetMut body)}
+    | Seq(nodes) ->
+        {node with Expr = Seq(List.map fixLetMut nodes)}
+    | BinNumOp(op, lhs, rhs) ->
+        {node with Expr = BinNumOp(op, fixLetMut lhs, fixLetMut rhs)}
+    | BinLogicOp(op, lhs, rhs) ->
+        {node with Expr = BinLogicOp(op, fixLetMut lhs, fixLetMut rhs)}
+    | BinRelOp(op, lhs, rhs) ->
+        {node with Expr = BinRelOp(op, fixLetMut lhs, fixLetMut rhs)}
+    | Sqrt(arg) -> {node with Expr = Sqrt(fixLetMut arg)}
+    | Not(arg) -> {node with Expr = Not(fixLetMut arg)}
+    | Print(arg) -> {node with Expr = Print(fixLetMut arg)}
+    | PrintLn(arg) -> {node with Expr = PrintLn(fixLetMut arg)}
+    | Assertion(arg) -> {node with Expr = Assertion(fixLetMut arg)}
+    | Ascription(tpe, arg) -> {node with Expr = Ascription(tpe, fixLetMut arg)}
+    | UnionCons(label, arg) -> {node with Expr = UnionCons(label, fixLetMut arg)}
+    | ArrayLength(arg) -> {node with Expr = ArrayLength(fixLetMut arg)}
+    | Copy(arg) -> {node with Expr = Copy(fixLetMut arg)}
+    | DeepCopy(arg) -> {node with Expr = DeepCopy(fixLetMut arg)}
+    | If(cond, ifTrue, ifFalse) ->
+        {node with Expr = If(fixLetMut cond, fixLetMut ifTrue, fixLetMut ifFalse)}
+    | Type(name, tpe, scope) ->
+        {node with Expr = Type(name, tpe, fixLetMut scope)}
+    | While(cond, body) ->
+        {node with Expr = While(fixLetMut cond, fixLetMut body)}
+    | DoWhile(body, cond) ->
+        {node with Expr = DoWhile(fixLetMut body, fixLetMut cond)}
+    | For(name, init, cond, step, body) ->
+        {node with Expr = For(name, fixLetMut init, fixLetMut cond, fixLetMut step, fixLetMut body)}
+    | Application(expr, args) ->
+        {node with Expr = Application(fixLetMut expr, List.map fixLetMut args)}
+    | StructCons(fields) ->
+        {node with Expr = StructCons(List.map (fun (n, e) -> (n, fixLetMut e)) fields)}
+    | FieldSelect(target, field) ->
+        {node with Expr = FieldSelect(fixLetMut target, field)}
+    | Assign(target, expr) ->
+        {node with Expr = Assign(fixLetMut target, fixLetMut expr)}
+    | Match(expr, cases) ->
+        {node with Expr = Match(fixLetMut expr, List.map (fun (l, v, cont) -> (l, v, fixLetMut cont)) cases)}
+    | ArrayCons(size, init) ->
+        {node with Expr = ArrayCons(fixLetMut size, fixLetMut init)}
+    | ArrayElem(name, index) ->
+        {node with Expr = ArrayElem(fixLetMut name, fixLetMut index)}
+    | UnitVal | BoolVal(_) | IntVal(_) | FloatVal(_) | StringVal(_)
+    | Pointer(_) | Var(_) | ReadInt | ReadFloat -> node    
+    | IncDec(op, name) -> node
+    | Slice(arr, lo, hi) -> {node with Expr = Slice(fixLetMut arr, fixLetMut lo, fixLetMut hi)}
+    | LetRec(name, tpe, init, scope) -> 
+        {node with Expr = LetRec(name, tpe, fixLetMut init, fixLetMut scope)}
+
 /// Parse the given array of 'tokens' with positions and return either Ok
 /// UntypedAST, or an Error with a position and a message.
 let parse (tokens: array<TokenWithPos>): Result<AST.UntypedAST, Lexer.Position * string> =
@@ -703,4 +895,8 @@ let parse (tokens: array<TokenWithPos>): Result<AST.UntypedAST, Lexer.Position *
         Index = 0
         Expected = ResizeArray 512
     }
-    pProgram stream
+    
+    match pProgram stream with
+    | Ok(ast) -> Ok(fixLetMut ast)
+    | Error(e) -> Error(e)
+

@@ -45,6 +45,8 @@ and Pretype =
     | TStruct of fields: List<string * PretypeNode>
     /// Discriminated union type.  Each case consists of a name and a pretype.
     | TUnion of cases: List<string * PretypeNode>
+    /// Array type. Every element has same pretype
+    | TArray of tpe: PretypeNode
 
 
 /// Operation type used to distinguish binary numerical expressions.
@@ -87,6 +89,18 @@ type RelationalOp =
     | LessEq
     /// Greater-than operation.
     | Greater
+
+/// Operation type used to distinguish pre/post increment and decrement expressions.
+[<RequireQualifiedAccess>]
+type IncDecOp =
+    /// Pre Increment operation.
+    | PreInc
+    /// Pre Decrement operation.
+    | PreDec
+    /// Post Increment operation.
+    | PostInc
+    /// Post Decrement operation.
+    | PostDec
 
 /// Node of the Abstract Syntax Tree of a Hygge expression.  The meaning of the
 /// two type arguments is the following: 'E specifies what typing environment
@@ -187,6 +201,15 @@ and Expr<'E,'T> =
     | Let of name: string
            * init: Node<'E,'T>
            * scope: Node<'E,'T>
+           
+    /// LetRec-binder, used to introduce a recursive variable with the given 'name' in a
+    /// 'scope' where its own name is available (i.e. it can call itself recursively).
+    /// The variable is initialised with the result of the expression
+    /// in 'init'.
+    | LetRec of name: string
+            * tpe: PretypeNode
+            * init: Node<'E,'T>
+            * scope: Node<'E,'T>
 
     /// Let-binder with explicit type annotation, used to introduce a variable
     /// with the given 'name' and pretype ('tpe') in a 'scope'.  The variable is
@@ -216,6 +239,10 @@ and Expr<'E,'T> =
     /// repeat the 'body'. Returns the value of the last execution of 'body'.
     | DoWhile of body: Node<'E,'T>
              * cond: Node<'E,'T>
+
+    /// Pre and Post Incrementation and Decrementation on a mutable variable
+    | IncDec of op: IncDecOp
+                * name: string
 
     // 'For' loop with a Scoped Variable: as long as 'cond' is true, repeat the 'body'.
     | For of name: string       // let mutable x
@@ -247,6 +274,10 @@ and Expr<'E,'T> =
     /// programs.
     | Pointer of addr: uint
 
+    | Copy of arg: Node<'E,'T>
+
+    | DeepCopy of arg: Node<'E,'T>
+
     /// Constructor of a discriminated union type instance, with a label and an
     /// expression.
     | UnionCons of label: string
@@ -259,6 +290,28 @@ and Expr<'E,'T> =
     /// match case value).
     | Match of expr: Node<'E,'T>
              * cases: List<string * string * Node<'E,'T>>
+    
+    /// Constructor of a Array instance. 
+    /// Array has a size and an inital value shared by all elements
+    | ArrayCons of size: Node<'E,'T>
+                 * init: Node<'E,'T>
+    
+    /// Array element accessor. 
+    /// Takes the identifier of the array and the index of the element to be accessed
+    | ArrayElem of name: Node<'E,'T>
+                 * index: Node<'E,'T>
+
+    /// Array length getter
+    /// Takes the identifier of the array
+    | ArrayLength of name: Node<'E,'T>
+
+    /// Slice expression
+    /// Takes array to slice, lo and hi indeces
+    | Slice of baseArray: Node<'E, 'T>
+             * lo: Node<'E, 'T>
+             * hi: Node<'E, 'T>
+
+
 
 
 /// A type alias for an untyped AST, where there is no typing environment nor

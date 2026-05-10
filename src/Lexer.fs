@@ -90,16 +90,26 @@ type Token =
     | DO
     /// Keyword 'for'
     | FOR
+    /// Pre-PostInc symbol.
+    | INC
+    /// Pre-PostDec symbol.
+    | DEC
     /// Keyword 'fun'.
     | FUN
     /// Keyword 'struct'.
     | STRUCT
+    /// Keyword 'copy'.
+    | COPY
+    /// Keyword 'deepcopy'.
+    | DEEPCOPY
     /// Keyword 'union'.
     | UNION
     /// Keyword 'match'.
     | MATCH
     /// Keyword 'with'.
     | WITH
+    /// Keyword 'rec'.
+    | REC
     /// Dot, used for field selection.
     | DOT
     /// Integer literal.
@@ -116,6 +126,16 @@ type Token =
     | IDENT of value: string
     /// End of file.
     | EOF
+    /// keyword `array`
+    | ARRAY
+    /// Keyword `arrayElem`
+    | ARRAYELEM
+    /// Keyword `arrayLength`
+    | ARRAYLENGTH
+    /// Keyword `in`
+    | IN
+    /// Keyword `slice`
+    | SLICE
 
 
 /// Position in a file.
@@ -173,6 +193,8 @@ let rec internal tokenizeRec (input: string) (pos: Position)
     | Symbol ")"  RPAREN   pos (accepted, pos')
     | Symbol "{"  LCURLY   pos (accepted, pos')
     | Symbol "}"  RCURLY   pos (accepted, pos')
+    | Symbol "++" INC      pos (accepted, pos')
+    | Symbol "--" DEC      pos (accepted, pos')
     | Symbol "+"  PLUS     pos (accepted, pos')
     | Symbol "-"  MINUS    pos (accepted, pos')
     | Symbol "*"  TIMES    pos (accepted, pos')
@@ -227,11 +249,20 @@ and internal mkKeywordOrIdent (s: string) =
     | "for" -> FOR
     | "fun" -> FUN
     | "struct" -> STRUCT
+    | "copy" -> COPY
+    | "deepcopy" -> DEEPCOPY
+    | "dot" -> DOT
     | "union" -> UNION
     | "match" -> MATCH
     | "with" -> WITH
     | "true" -> LIT_BOOL true
     | "false" -> LIT_BOOL false
+    | "array" -> ARRAY
+    | "arrayElem" -> ARRAYELEM
+    | "arrayLength" -> ARRAYLENGTH
+    | "in" -> IN
+    | "slice" -> SLICE
+    | "rec" -> REC
     | other -> IDENT other
 
 /// Convert a string into a FloatLit token, after stripping the final 'f'.

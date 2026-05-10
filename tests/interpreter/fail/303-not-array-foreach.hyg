@@ -1,0 +1,5 @@
+let arr = "psych!";
+
+for (x in arr) {
+    assert(x = 1)
+}
