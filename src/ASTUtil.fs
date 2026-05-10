@@ -280,6 +280,7 @@ let rec capturedVars (node: Node<'E,'T>): Set<string> =
     | Ascription(_, node) -> capturedVars node
     | Let(name, init, scope)
     | LetT(name, _, init, scope)
+    | LetRec(name, _, init, scope)
     | LetMut(name, init, scope) ->
         // All the captured variables in the 'let' initialisation, together with
         // all captured variables in the scope --- minus the newly-bound var
@@ -322,7 +323,8 @@ let rec capturedVars (node: Node<'E,'T>): Set<string> =
     | DeepCopy(arg) -> capturedVars arg
     | ArrayCons(size, init) -> Set.union (capturedVars size) (capturedVars init)
     | ArrayElem(name, index) -> Set.union (capturedVars name) (capturedVars index)
-    | ArrayLength(name) -> capturedVars name  
+    | ArrayLength(name) -> capturedVars name
+    | Slice(arr, lo, hi) -> Set.union (capturedVars arr) (capturedVars lo) |> Set.union (capturedVars hi)
 
     
 /// Compute the union of the captured variables in a list of AST nodes.

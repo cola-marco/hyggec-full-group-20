@@ -881,6 +881,9 @@ let rec fixLetMut (node: Node<'a,'b>): Node<'a,'b> =
     | UnitVal | BoolVal(_) | IntVal(_) | FloatVal(_) | StringVal(_)
     | Pointer(_) | Var(_) | ReadInt | ReadFloat -> node    
     | IncDec(op, name) -> node
+    | Slice(arr, lo, hi) -> {node with Expr = Slice(fixLetMut arr, fixLetMut lo, fixLetMut hi)}
+    | LetRec(name, tpe, init, scope) -> 
+        {node with Expr = LetRec(name, tpe, fixLetMut init, fixLetMut scope)}
 
 /// Parse the given array of 'tokens' with positions and return either Ok
 /// UntypedAST, or an Error with a position and a message.
