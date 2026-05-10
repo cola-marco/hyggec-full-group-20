@@ -68,7 +68,7 @@ let rec internal formatType (t: Type.Type): Tree =
     | Type.TUnion(cases) ->
         /// Formatted case labels with their respective type
         let casesChildren =
-            List.map (fun (case: Type.UnionCaseInfo)-> ($"label %s{case.Label}", formatType t)) cases
+            List.map (fun (label, t)-> ($"label %s{label}", formatType t)) cases
         Node("union", casesChildren)
     | Type.TArray(init) ->
         Node("array", [

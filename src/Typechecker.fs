@@ -10,9 +10,6 @@ module Typechecker
 open AST
 open Type
 
-let mutable labelCount = 0
-//let labelDictLT = System.Collections.Generic.Dictionary<string, int>()
-
 
 /// Representation of typing errors
 type TypeErrors = list<Position * string>
@@ -139,6 +136,7 @@ let rec internal resolvePretype (env: TypingEnv) (pt: AST.PretypeNode): Result<T
             let elemType = getOkValue elemType
             Ok(TArray(elemType))
 
+
 /// Resolve a type variable using the given typing environment: optionally
 /// return the Type corresponding to variable 'name', or None if 'name' is not
 /// defined in the given environment.
@@ -194,17 +192,17 @@ let rec isSubtypeOf (env: TypingEnv) (t1: Type) (t2: Type): bool =
                 List.forall2 (fun t1 t2 -> isSubtypeOf env t1 t2)
                              fieldTypes1 fieldTypes2
     | (TUnion(cases1), TUnion(cases2)) ->
-        /// Tags of the subtype union
-        let (labels1) = List.map (fun c -> c.Tag) cases1
-        /// Tags of the supertype union
-        let (labels2) = List.map (fun c -> c.Tag) cases2
-        // A subtype union must have a subset of the labels (<-> tags) of the supertype
+        /// Labels of the subtype union
+        let (labels1, _) = List.unzip cases1
+        /// Labels of the supertype union
+        let (labels2, _) = List.unzip cases2
+        // A subtype union must have a subset of the labels of the supertype
         if not (Set.isSubset (Set(labels1)) (Set(labels2))) then false
         else
             // A label that appears in both the subtype and supertype unions
             // must have a subtyped argument in the subtype union
-            let map1 = List.map (fun c -> (c.Tag, c.CaseType)) cases1 |> Map.ofList
-            let map2 = List.map (fun c -> (c.Tag, c.CaseType)) cases2 |> Map.ofList
+            let map1 = Map.ofList cases1
+            let map2 = Map.ofList cases2
             List.forall (fun l -> isSubtypeOf env map1.[l] map2.[l]) labels1
     | (TFun(args1, ret1), TFun(args2, ret2)) ->
         args1.Length = args2.Length
@@ -786,7 +784,7 @@ let rec internal typer (env: TypingEnv) (node: UntypedAST): TypingResult =
         | Ok(texpr) ->
             // We type the union instance with the most precise labelled union
             // type that contains it
-            Ok { Pos = node.Pos; Env = env; Type = TUnion([{Label = label; Tag = Util.genSymbolId(label); CaseType = texpr.Type}]);
+            Ok { Pos = node.Pos; Env = env; Type = TUnion([label, texpr.Type]);
                  Expr = UnionCons(label, texpr) }
         | Error(es) -> Error(es)
 
