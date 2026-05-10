@@ -147,6 +147,30 @@ let private deduplicateTypeDefs (defs: List<GeneratedTypeDef>) : List<GeneratedT
 /// while converting the scope where that variable is visible.
 let mutable private convertedVarTypes: Map<string, Type.Type> = Map.empty
 
+/// Records the converted return type of each generated closure type.
+let mutable private closureReturnTypes: Map<string, Type.Type> = Map.empty
+
+let private tryGetClosureReturnType (tpe: Type.Type) : Option<Type.Type> =
+    match tpe with
+    | TVar name when name.StartsWith("$Closure") ->
+        Map.tryFind name closureReturnTypes
+
+    | TStruct fields ->
+        fields
+        |> List.tryFind (fun (fieldName, _) -> fieldName = "$f")
+        |> Option.bind
+            (
+                fun (_, functionType) ->
+                    match functionType with
+                    | TFun(_hiddenClosureArg :: _args, ret) ->
+                        Some ret
+                    | _ ->
+                        None
+            )
+
+    | _ ->
+        None
+
 /// Temporarily records the converted type of a let-bound variable while
 /// converting its scope, then restores the previous map afterwards.
 let private withConvertedVarType (name: string) (convertedType: Type.Type) (work: unit -> ConversionResult) : ConversionResult =
@@ -163,8 +187,15 @@ let private withConvertedVarType (name: string) (convertedType: Type.Type) (work
 
 let private isGeneratedClosureType (tpe: Type.Type) =
     match tpe with
-    | TVar name when name.StartsWith("$Closure") -> true
-    | _ -> false
+    | TVar name when name.StartsWith("$Closure") ->
+        true
+
+    | TStruct fields ->
+        fields
+        |> List.exists (fun (fieldName, _) -> fieldName = "$f")
+
+    | _ ->
+        false
 
 /// Create a common wrapper closure for an if-expression whose branches already
 /// produce different generated closure types, but whose original source type is
@@ -311,6 +342,16 @@ let private makeSharedClosureIf (node: Typechecker.TypedAST) (condResult: Conver
                 )
             )
 
+    let convertedWrapperReturnType =
+        match tryGetClosureReturnType trueResult.ConvertedType with
+        | Some convertedReturnType ->
+            convertedReturnType
+        | None ->
+            returnType
+
+    closureReturnTypes <-
+        closureReturnTypes.Add(commonClosureTypeName, convertedWrapperReturnType)
+        
     {
         Expr =
             mkLike node
@@ -582,6 +623,9 @@ and convertLambdaToClosureWith (closureTypeName: string)   (captured: Set<string
     let convertedReturnType =
         bodyResult.ConvertedType
 
+    closureReturnTypes <-
+        closureReturnTypes.Add(closureTypeName, convertedReturnType)
+
     let plainFunctionType =
         mkPretype lambdaNode.Pos
             (
@@ -597,7 +641,14 @@ and convertLambdaToClosureWith (closureTypeName: string)   (captured: Set<string
         |> List.map
             (
                 fun varName ->
-                    varName, typeToPretype lambdaNode.Pos (lookupVarType lambdaNode varName)
+                    let capturedType =
+                        match Map.tryFind varName convertedVarTypes with
+                        | Some convertedType ->
+                            convertedType
+                        | None ->
+                            lookupVarType lambdaNode varName
+
+                    varName, typeToPretype lambdaNode.Pos capturedType
             )
 
     let closureStructType =
@@ -923,33 +974,50 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                     node.Type        }
 
     | Type(name, def, scope) ->
-        let scopeResult = convertExpr scope
+        let scopeResult =
+            convertExpr scope
+
+        let wrappedScope =
+            wrapTypeDefs node.Pos scopeResult.TypeDefs scopeResult.Expr
+
         {
             Expr = mkLike node 
                 (
                     Type(
                         name, 
                         def, 
-                        scopeResult.Expr
+                        wrappedScope
                     )
                 )
-            TypeDefs = scopeResult.TypeDefs
-            ConvertedType = scopeResult.ConvertedType
+
+            TypeDefs =
+                []
+
+            ConvertedType =
+                scopeResult.ConvertedType
         }
 
     | Ascription(tpe, inner) ->
-        let innerResult = convertExpr inner
+        let innerResult =
+            convertExpr inner
+
+        let convertedAnnotation =
+            typeToPretype node.Pos innerResult.ConvertedType
+
         {
             Expr = mkLike node 
                 (
                     Ascription(
-                        tpe, 
+                        convertedAnnotation, 
                         innerResult.Expr
                     )
                 )
-            TypeDefs = innerResult.TypeDefs
-            ConvertedType = innerResult.ConvertedType
 
+            TypeDefs =
+                innerResult.TypeDefs
+
+            ConvertedType =
+                innerResult.ConvertedType
         }
 
     | Assertion arg ->
@@ -1024,18 +1092,21 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
             convertExpr init
 
         let scopeResult =
-                withConvertedVarType name initResult.ConvertedType
-                    (
-                        fun () ->
-                            convertExpr scope
-                    )
+            withConvertedVarType name initResult.ConvertedType
+                (
+                    fun () ->
+                        convertExpr scope
+                )
+
+        let convertedAnnotation =
+            typeToPretype node.Pos initResult.ConvertedType
 
         {
             Expr = mkLike node 
                 (
                     LetT(
                         name, 
-                        tpe, 
+                        convertedAnnotation, 
                         initResult.Expr,
                         scopeResult.Expr
                     )
@@ -1047,7 +1118,6 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
             ConvertedType =
                 scopeResult.ConvertedType
         }
-
     | LetMut(name, init, scope) ->
         let initResult =
             convertExpr init
@@ -1075,6 +1145,46 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
             ConvertedType =
                 scopeResult.ConvertedType
         }
+    
+    | LetRec(name, tpe, init, scope) ->
+        match init.Expr with
+        | Lambda(args, body) ->
+            let bodyResult =
+                convertExpr body
+
+            let initExpr =
+                mkLike init
+                    (
+                        Lambda(
+                            args,
+                            bodyResult.Expr
+                        )
+                    )
+
+            let scopeResult =
+                convertExpr scope
+
+            {
+                Expr =
+                    mkLike node
+                        (
+                            LetRec(
+                                name,
+                                tpe,
+                                initExpr,
+                                scopeResult.Expr
+                            )
+                        )
+
+                TypeDefs =
+                    bodyResult.TypeDefs @ scopeResult.TypeDefs
+
+                ConvertedType =
+                    scopeResult.ConvertedType
+            }
+
+        | _ ->
+            failwith "Closure conversion expected LetRec initializer to be a lambda"
 
     | Assign(target, expr) ->
         let targetResult = convertExpr target
@@ -1147,41 +1257,73 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
     // Apply a closure by calling its $f field and passing the closure
     // itself as the hidden first argument.
     | Application(fn, args) ->
-        let tmpName = nameGenerator.Generate "tmp"
+        let fnResult =
+            convertExpr fn
 
-        let fnResult = convertExpr fn
-        let argResults = args |> List.map convertExpr
+        let argResults =
+            args |> List.map convertExpr
 
-        let tmpVar =
-            mkNode node.Pos (Var tmpName)
+        let allTypeDefs =
+            fnResult.TypeDefs @ (argResults |> List.collect (fun r -> r.TypeDefs))
 
-        let functionField =
-            mkNode node.Pos (FieldSelect(tmpVar, "$f"))
+        match tryGetClosureReturnType fnResult.ConvertedType with
+        | Some convertedReturnType ->
+            // Apply a closure by calling its $f field and passing the closure
+            // itself as the hidden first argument.
+            let tmpName =
+                nameGenerator.Generate "tmp"
 
-        let call =
-            mkNode node.Pos (
-                Application(
-                    functionField,
-                    tmpVar :: (argResults |> List.map (fun r -> r.Expr))
-                )
-            )
+            let tmpVar =
+                mkNode node.Pos (Var tmpName)
 
-        {
-            Expr =
-                mkLike node (
-                    Let(
-                        tmpName,
-                        fnResult.Expr,
-                        call
+            let functionField =
+                mkNode node.Pos (FieldSelect(tmpVar, "$f"))
+
+            let call =
+                mkNode node.Pos
+                    (
+                        Application(
+                            functionField,
+                            tmpVar :: (argResults |> List.map (fun r -> r.Expr))
+                        )
                     )
-                )
 
-            TypeDefs =
-                fnResult.TypeDefs @ (argResults |> List.collect (fun r -> r.TypeDefs))
+            {
+                Expr =
+                    mkLike node
+                        (
+                            Let(
+                                tmpName,
+                                fnResult.Expr,
+                                call
+                            )
+                        )
 
-            ConvertedType =
-                node.Type
-        }
+                TypeDefs =
+                    allTypeDefs
+
+                ConvertedType =
+                    convertedReturnType
+            }
+
+        | None ->
+            // Plain function application
+            {
+                Expr =
+                    mkLike node
+                        (
+                            Application(
+                                fnResult.Expr,
+                                argResults |> List.map (fun r -> r.Expr)
+                            )
+                        )
+
+                TypeDefs =
+                    allTypeDefs
+
+                ConvertedType =
+                    node.Type
+            }
 
     | StructCons fields ->
         let fieldResults =
@@ -1227,7 +1369,19 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
         }
 
     | FieldSelect(target, field) ->
-        let targetResult = convertExpr target
+        let targetResult =
+            convertExpr target
+
+        let convertedFieldType =
+            match targetResult.ConvertedType with
+            | TStruct fields ->
+                match fields |> List.tryFind (fun (fieldName, _) -> fieldName = field) with
+                | Some(_, fieldType) -> fieldType
+                | None -> node.Type
+
+            | _ ->
+                node.Type
+
         {
             Expr = mkLike node 
                 (
@@ -1236,10 +1390,14 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                         field
                     )
                 )
-            TypeDefs = targetResult.TypeDefs
-            ConvertedType = node.Type
-        }
 
+            TypeDefs =
+                targetResult.TypeDefs
+
+            ConvertedType =
+                convertedFieldType
+        }
+ 
     | Pointer addr ->
         {
             Expr = mkLike node 
@@ -1338,7 +1496,36 @@ and convertExpr (node: Typechecker.TypedAST) : ConversionResult =
                 )
             TypeDefs = nameResult.TypeDefs
             ConvertedType = node.Type
-        }    
+        }  
+
+    | Slice(baseArray, lo, hi) ->
+        let baseArrayResult =
+            convertExpr baseArray
+
+        let loResult =
+            convertExpr lo
+
+        let hiResult =
+            convertExpr hi
+
+        {
+            Expr =
+                mkLike node
+                    (
+                        Slice(
+                            baseArrayResult.Expr,
+                            loResult.Expr,
+                            hiResult.Expr
+                        )
+                    )
+
+            TypeDefs =
+                baseArrayResult.TypeDefs @ loResult.TypeDefs @ hiResult.TypeDefs
+
+            ConvertedType =
+                node.Type
+        }
+     
     | IncDec(op, name) ->
         {
             Expr =
@@ -1364,4 +1551,5 @@ and convert (node: Typechecker.TypedAST) : AST.UntypedAST =
 /// Entry point for the closure-conversion phase.
 let closureConvert (node: Typechecker.TypedAST) : AST.UntypedAST =
     convertedVarTypes <- Map.empty
+    closureReturnTypes <- Map.empty
     convert node
